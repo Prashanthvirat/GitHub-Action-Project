@@ -17,6 +17,58 @@ resource "aws_vpc" "vpc" {
   }
 }
 
+# fixed: VPC flow logs enabled
+resource "aws_flow_log" "vpc_flow_log" {
+  vpc_id          = aws_vpc.vpc.id
+  traffic_type    = "ALL"
+  iam_role_arn    = aws_iam_role.vpc_flow_log_role.arn
+  log_destination = aws_cloudwatch_log_group.vpc_flow_log.arn
+  tags = {
+    Name        = "vpc-flow-log"
+    Environment = var.environment
+  }
+}
+
+resource "aws_cloudwatch_log_group" "vpc_flow_log" {
+  name              = "/aws/vpc/flow-logs"
+  retention_in_days = 30
+  tags = {
+    Name        = "vpc-flow-log-group"
+    Environment = var.environment
+  }
+}
+
+resource "aws_iam_role" "vpc_flow_log_role" {
+  name = "vpc-flow-log-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = { Service = "vpc-flow-logs.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "vpc_flow_log_policy" {
+  name = "vpc-flow-log-policy"
+  role = aws_iam_role.vpc_flow_log_role.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:DescribeLogGroups",
+        "logs:DescribeLogStreams"
+      ]
+      Resource = "*"
+    }]
+  })
+}
+
 resource "aws_subnet" "public" {
   vpc_id                  = aws_vpc.vpc.id
   cidr_block              = "10.0.1.0/24"
@@ -79,10 +131,14 @@ resource "aws_default_security_group" "sg" {
 # ─────────────────────────────────────────
 resource "aws_ecr_repository" "my_ecr_repo" {
   name                 = "balu-elastic-ecr"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "IMMUTABLE" # fixed: was MUTABLE
 
   image_scanning_configuration {
     scan_on_push = true
+  }
+
+  encryption_configuration {
+    encryption_type = "AES256"
   }
 
   tags = {
@@ -109,6 +165,26 @@ resource "aws_instance" "my_ec2_instance" {
   subnet_id              = aws_subnet.public.id
   vpc_security_group_ids = [aws_default_security_group.sg.id]
   iam_instance_profile   = aws_iam_instance_profile.eks_profile.name
+  ebs_optimized          = true  # fixed: EBS optimized
+  monitoring             = true  # fixed: detailed monitoring enabled
+
+  # fixed: enforce IMDSv2 only (no IMDSv1)
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 1
+  }
+
+  # fixed: encrypt root block device
+  root_block_device {
+    encrypted   = true
+    volume_type = "gp3"
+    volume_size = 30
+    tags = {
+      Name        = "Jenkins-Root-Volume"
+      Environment = var.environment
+    }
+  }
 
   user_data = <<-EOF
     #!/bin/bash
@@ -259,6 +335,7 @@ resource "aws_ebs_volume" "jenkins_volume" {
   availability_zone = aws_instance.my_ec2_instance.availability_zone
   size              = var.ebs_volume_size
   type              = "gp3"
+  encrypted         = true  # fixed: EBS encryption enabled
   tags = {
     Name        = "Jenkins-Volume"
     Environment = var.environment
