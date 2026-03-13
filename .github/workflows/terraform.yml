@@ -25,6 +25,13 @@ env:
   AWS_REGION: "ap-south-1"
   TF_WORKING_DIR: "."
 
+# Global permissions for the entire workflow
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+  pull-requests: write
+
 jobs:
   # ─────────────────────────────────────────────
   # JOB 1: Security Scan (runs on every push/PR)
@@ -32,6 +39,10 @@ jobs:
   security-scan:
     name: 🔐 Security Scan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -46,8 +57,9 @@ jobs:
           output_file_path: checkov-results.sarif
 
       - name: Upload Checkov results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
+        continue-on-error: true
         with:
           sarif_file: checkov-results.sarif
 
