@@ -1,0 +1,97 @@
+name: Deploy Monitoring Stack
+
+on:
+  workflow_run:
+    workflows: ["Terraform CI/CD Pipeline"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ap-south-1
+  EKS_CLUSTER: balu-cluster22
+
+jobs:
+  deploy-monitoring:
+    name: 📊 Deploy Prometheus & Grafana
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.29.0'
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: 'v3.14.0'
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ env.AWS_REGION }} \
+            --name ${{ env.EKS_CLUSTER }}
+
+      - name: Add Helm Repos
+        run: |
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo add grafana https://grafana.github.io/helm-charts
+          helm repo update
+
+      - name: Create monitoring namespace
+        run: kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy kube-prometheus-stack
+        run: |
+          helm upgrade --install kube-prometheus-stack \
+            prometheus-community/kube-prometheus-stack \
+            --namespace monitoring \
+            --set grafana.adminPassword="${{ secrets.GRAFANA_ADMIN_PASSWORD }}" \
+            --set grafana.service.type=LoadBalancer \
+            --set prometheus.service.type=LoadBalancer \
+            --set alertmanager.service.type=LoadBalancer \
+            --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
+            --set grafana.sidecar.dashboards.enabled=true \
+            --set grafana.sidecar.datasources.enabled=true \
+            --set grafana.persistence.enabled=true \
+            --set grafana.persistence.size=5Gi \
+            --wait \
+            --timeout 10m
+
+      - name: Apply Prometheus rules
+        run: kubectl apply -f monitoring/prometheus-rules.yaml
+
+      - name: Apply Grafana dashboards
+        run: kubectl apply -f monitoring/grafana-dashboard.yaml
+
+      - name: Wait for LoadBalancers
+        run: |
+          echo "Waiting for LoadBalancer IPs..."
+          sleep 60
+          GRAFANA_LB=$(kubectl get svc kube-prometheus-stack-grafana -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
+          PROMETHEUS_LB=$(kubectl get svc kube-prometheus-stack-prometheus -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
+          ALERTMANAGER_LB=$(kubectl get svc kube-prometheus-stack-alertmanager -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
+
+          echo "### 📊 Monitoring Endpoints" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | URL |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-----|" >> $GITHUB_STEP_SUMMARY
+          echo "| Grafana | http://$GRAFANA_LB (admin / \$GRAFANA_ADMIN_PASSWORD) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Prometheus | http://$PROMETHEUS_LB:9090 |" >> $GITHUB_STEP_SUMMARY
+          echo "| Alertmanager | http://$ALERTMANAGER_LB:9093 |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Verify deployments
+        run: |
+          kubectl get pods -n monitoring
+          kubectl get svc -n monitoring

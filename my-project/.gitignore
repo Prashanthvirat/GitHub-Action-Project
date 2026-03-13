@@ -1,0 +1,159 @@
+# ─────────────────────────────────────────
+# SECRETS & CREDENTIALS — never commit these
+# ─────────────────────────────────────────
+*.pem
+*.key
+*.p12
+*.pfx
+.env
+.env.*
+credentials
+*credentials*
+*secret*
+terraform.tfvars
+*.tfvars
+!example.tfvars
+
+# AWS CLI credentials
+.aws/
+aws-exports.js
+
+# ─────────────────────────────────────────
+# TERRAFORM
+# ─────────────────────────────────────────
+# Local .terraform directory (downloaded providers/modules)
+**/.terraform/*
+.terraform/
+.terraform.lock.hcl
+
+# Terraform state files — use S3 backend, never commit these
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Terraform plan files (contain sensitive data)
+tfplan
+*.tfplan
+plan_output.txt
+terraform_outputs.json
+
+# Terraform crash log
+crash.log
+crash.*.log
+
+# Override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# ─────────────────────────────────────────
+# SSH & KEYS
+# ─────────────────────────────────────────
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+*.pub
+known_hosts
+
+# ─────────────────────────────────────────
+# AWS & CLOUD
+# ─────────────────────────────────────────
+kubeconfig
+kubeconfig.*
+.kube/
+eksctl-*
+awscliv2.zip
+aws/
+
+# ─────────────────────────────────────────
+# OS FILES
+# ─────────────────────────────────────────
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+.nfs*
+
+# ─────────────────────────────────────────
+# EDITORS & IDEs
+# ─────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.iml
+.project
+.classpath
+.settings/
+
+# ─────────────────────────────────────────
+# LOGS & TEMP FILES
+# ─────────────────────────────────────────
+*.log
+logs/
+/tmp/
+temp/
+.tmp/
+installation.log
+monitoring_urls.txt
+
+# ─────────────────────────────────────────
+# DOCKER
+# ─────────────────────────────────────────
+.dockerignore
+docker-compose.override.yml
+
+# ─────────────────────────────────────────
+# JAVA / MAVEN (Jenkins builds)
+# ─────────────────────────────────────────
+target/
+*.class
+*.jar
+*.war
+*.ear
+.mvn/
+!.mvn/wrapper/maven-wrapper.jar
+
+# ─────────────────────────────────────────
+# NODE (if any frontend)
+# ─────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# ─────────────────────────────────────────
+# PYTHON
+# ─────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# ─────────────────────────────────────────
+# ZIP / ARCHIVES
+# ─────────────────────────────────────────
+*.zip
+*.tar.gz
+*.tgz
+*.gz
+*.rar
+eksctl.tar.gz
+awscliv2.zip

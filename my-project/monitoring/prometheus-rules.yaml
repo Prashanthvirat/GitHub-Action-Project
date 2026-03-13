@@ -1,0 +1,112 @@
+---
+# ServiceMonitor to scrape Jenkins metrics via Prometheus
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: jenkins-monitor
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app: jenkins
+  namespaceSelector:
+    matchNames:
+      - default
+      - jenkins
+  endpoints:
+    - port: http
+      path: /prometheus
+      interval: 30s
+      scrapeTimeout: 10s
+
+---
+# PrometheusRule for Jenkins alerting
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: jenkins-alerts
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: jenkins.rules
+      interval: 1m
+      rules:
+        - alert: JenkinsDown
+          expr: up{job="jenkins"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Jenkins is down"
+            description: "Jenkins has been unreachable for more than 5 minutes."
+
+        - alert: JenkinsHighJobFailureRate
+          expr: rate(jenkins_builds_failed_build_count_total[10m]) > 0.5
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High Jenkins job failure rate"
+            description: "More than 50% of Jenkins builds are failing."
+
+        - alert: JenkinsQueueLengthHigh
+          expr: jenkins_queue_size_value > 10
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Jenkins build queue is large"
+            description: "Jenkins has more than 10 jobs queued for 10 minutes."
+
+---
+# PrometheusRule for EKS Node alerts
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: eks-node-alerts
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: eks-nodes.rules
+      rules:
+        - alert: NodeHighCPU
+          expr: (1 - avg by(instance)(rate(node_cpu_seconds_total{mode="idle"}[5m]))) * 100 > 85
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Node CPU usage is high"
+            description: "Node {{ $labels.instance }} CPU usage is above 85%."
+
+        - alert: NodeHighMemory
+          expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Node memory usage is high"
+            description: "Node {{ $labels.instance }} memory usage is above 85%."
+
+        - alert: NodeDiskPressure
+          expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 < 15
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Node disk space critically low"
+            description: "Node {{ $labels.instance }} has less than 15% disk space remaining."
+
+        - alert: PodCrashLooping
+          expr: rate(kube_pod_container_status_restarts_total[15m]) * 60 * 5 > 5
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Pod is crash looping"
+            description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is restarting too frequently."

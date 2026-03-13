@@ -1,0 +1,129 @@
+---
+# ConfigMap with Grafana dashboard for Jenkins + EKS
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-jenkins-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  jenkins-dashboard.json: |
+    {
+      "title": "Jenkins CI/CD & EKS Overview",
+      "uid": "jenkins-eks-001",
+      "schemaVersion": 38,
+      "version": 1,
+      "refresh": "30s",
+      "tags": ["jenkins", "eks", "cicd"],
+      "panels": [
+        {
+          "id": 1,
+          "title": "Jenkins Build Success Rate",
+          "type": "stat",
+          "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+          "targets": [{
+            "expr": "sum(jenkins_builds_success_build_count_total) / (sum(jenkins_builds_success_build_count_total) + sum(jenkins_builds_failed_build_count_total)) * 100",
+            "legendFormat": "Success Rate %"
+          }],
+          "options": {
+            "thresholds": {
+              "steps": [
+                { "value": 0, "color": "red" },
+                { "value": 70, "color": "yellow" },
+                { "value": 90, "color": "green" }
+              ]
+            }
+          }
+        },
+        {
+          "id": 2,
+          "title": "Active Jenkins Builds",
+          "type": "stat",
+          "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+          "targets": [{
+            "expr": "jenkins_builds_running_build_count_value",
+            "legendFormat": "Running Builds"
+          }]
+        },
+        {
+          "id": 3,
+          "title": "Jenkins Queue Size",
+          "type": "stat",
+          "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+          "targets": [{
+            "expr": "jenkins_queue_size_value",
+            "legendFormat": "Queued Jobs"
+          }]
+        },
+        {
+          "id": 4,
+          "title": "Node CPU Usage",
+          "type": "timeseries",
+          "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+          "targets": [{
+            "expr": "(1 - avg by(instance)(rate(node_cpu_seconds_total{mode='idle'}[5m]))) * 100",
+            "legendFormat": "{{ instance }}"
+          }]
+        },
+        {
+          "id": 5,
+          "title": "Node Memory Usage",
+          "type": "timeseries",
+          "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+          "targets": [{
+            "expr": "(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100",
+            "legendFormat": "{{ instance }}"
+          }]
+        },
+        {
+          "id": 6,
+          "title": "Pod Restarts",
+          "type": "table",
+          "gridPos": { "x": 0, "y": 12, "w": 24, "h": 6 },
+          "targets": [{
+            "expr": "kube_pod_container_status_restarts_total > 0",
+            "legendFormat": "{{ namespace }}/{{ pod }}"
+          }]
+        },
+        {
+          "id": 7,
+          "title": "Disk Usage",
+          "type": "gauge",
+          "gridPos": { "x": 0, "y": 18, "w": 8, "h": 6 },
+          "targets": [{
+            "expr": "(1 - (node_filesystem_avail_bytes{mountpoint='/'} / node_filesystem_size_bytes{mountpoint='/'})) * 100",
+            "legendFormat": "Disk Used %"
+          }],
+          "options": {
+            "thresholds": {
+              "steps": [
+                { "value": 0, "color": "green" },
+                { "value": 75, "color": "yellow" },
+                { "value": 90, "color": "red" }
+              ]
+            }
+          }
+        }
+      ]
+    }
+
+---
+# Grafana datasource for Prometheus (auto-provisioned)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: monitoring
+  labels:
+    grafana_datasource: "1"
+data:
+  prometheus.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://kube-prometheus-stack-prometheus:9090
+        isDefault: true
+        editable: true

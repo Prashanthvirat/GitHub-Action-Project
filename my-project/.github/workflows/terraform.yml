@@ -1,0 +1,274 @@
+name: Terraform CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Terraform action to run'
+        required: true
+        default: 'plan'
+        type: choice
+        options:
+          - plan
+          - apply
+          - destroy
+
+env:
+  TF_VERSION: "1.7.0"
+  AWS_REGION: "ap-south-1"
+  TF_WORKING_DIR: "."
+
+jobs:
+  # ─────────────────────────────────────────────
+  # JOB 1: Security Scan (runs on every push/PR)
+  # ─────────────────────────────────────────────
+  security-scan:
+    name: 🔐 Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Checkov (Terraform security scan)
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: ${{ env.TF_WORKING_DIR }}
+          framework: terraform
+          soft_fail: true
+          output_format: sarif
+          output_file_path: checkov-results.sarif
+
+      - name: Upload Checkov results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: checkov-results.sarif
+
+      - name: Run tfsec
+        uses: aquasecurity/tfsec-action@v1.0.0
+        with:
+          soft_fail: true
+
+  # ─────────────────────────────────────────────
+  # JOB 2: Terraform Validate & Plan
+  # ─────────────────────────────────────────────
+  terraform-plan:
+    name: 📋 Terraform Plan
+    runs-on: ubuntu-latest
+    needs: security-scan
+    environment: plan
+    defaults:
+      run:
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Format Check
+        id: fmt
+        run: terraform fmt -check -recursive
+        continue-on-error: true
+
+      - name: Terraform Init
+        id: init
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=terraform/jenkins-eks/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}"
+
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate -no-color
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform plan \
+            -var="aws_access_key=${{ secrets.AWS_ACCESS_KEY_ID }}" \
+            -var="aws_secret_key=${{ secrets.AWS_SECRET_ACCESS_KEY }}" \
+            -var="key_pair_name=${{ secrets.KEY_PAIR_NAME }}" \
+            -var="private_key_path=/tmp/ec2_key.pem" \
+            -no-color \
+            -out=tfplan 2>&1 | tee plan_output.txt
+        continue-on-error: true
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan
+          path: |
+            ${{ env.TF_WORKING_DIR }}/tfplan
+            ${{ env.TF_WORKING_DIR }}/plan_output.txt
+          retention-days: 7
+
+      - name: Post Plan Summary to PR
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('plan_output.txt', 'utf8');
+            const maxLen = 65000;
+            const truncated = plan.length > maxLen ? plan.substring(0, maxLen) + '\n... truncated' : plan;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## 📋 Terraform Plan Results\n\`\`\`hcl\n${truncated}\n\`\`\``
+            });
+
+      - name: Check Plan Status
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
+
+  # ─────────────────────────────────────────────
+  # JOB 3: Terraform Apply (main branch only)
+  # ─────────────────────────────────────────────
+  terraform-apply:
+    name: 🚀 Terraform Apply
+    runs-on: ubuntu-latest
+    needs: terraform-plan
+    environment: production
+    if: |
+      (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'apply')
+    defaults:
+      run:
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Write EC2 Private Key
+        run: |
+          echo "${{ secrets.EC2_PRIVATE_KEY }}" > /tmp/ec2_key.pem
+          chmod 600 /tmp/ec2_key.pem
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=terraform/jenkins-eks/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}"
+
+      - name: Download Plan Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-plan
+          path: ${{ env.TF_WORKING_DIR }}
+
+      - name: Terraform Apply
+        run: |
+          terraform apply \
+            -var="aws_access_key=${{ secrets.AWS_ACCESS_KEY_ID }}" \
+            -var="aws_secret_key=${{ secrets.AWS_SECRET_ACCESS_KEY }}" \
+            -var="key_pair_name=${{ secrets.KEY_PAIR_NAME }}" \
+            -var="private_key_path=/tmp/ec2_key.pem" \
+            -auto-approve \
+            tfplan
+
+      - name: Capture Terraform Outputs
+        id: outputs
+        run: |
+          terraform output -json > terraform_outputs.json
+          echo "EC2_IP=$(terraform output -raw ec2_public_ip 2>/dev/null || echo 'N/A')" >> $GITHUB_OUTPUT
+          echo "ECR_URL=$(terraform output -raw ecr_repository_url 2>/dev/null || echo 'N/A')" >> $GITHUB_OUTPUT
+
+      - name: Send Slack Notification
+        if: always()
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": "${{ job.status == 'success' && '✅' || '❌' }} Terraform Apply *${{ job.status }}*\nRepo: ${{ github.repository }}\nBranch: ${{ github.ref_name }}\nEC2 IP: ${{ steps.outputs.outputs.EC2_IP }}"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        continue-on-error: true
+
+  # ─────────────────────────────────────────────
+  # JOB 4: Terraform Destroy (manual only)
+  # ─────────────────────────────────────────────
+  terraform-destroy:
+    name: 💣 Terraform Destroy
+    runs-on: ubuntu-latest
+    environment: destroy-approval
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'destroy'
+    defaults:
+      run:
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Write EC2 Private Key
+        run: |
+          echo "${{ secrets.EC2_PRIVATE_KEY }}" > /tmp/ec2_key.pem
+          chmod 600 /tmp/ec2_key.pem
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=terraform/jenkins-eks/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}"
+
+      - name: Terraform Destroy
+        run: |
+          terraform destroy \
+            -var="aws_access_key=${{ secrets.AWS_ACCESS_KEY_ID }}" \
+            -var="aws_secret_key=${{ secrets.AWS_SECRET_ACCESS_KEY }}" \
+            -var="key_pair_name=${{ secrets.KEY_PAIR_NAME }}" \
+            -var="private_key_path=/tmp/ec2_key.pem" \
+            -auto-approve
