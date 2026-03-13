@@ -187,13 +187,7 @@ jobs:
 
       - name: Terraform Apply
         run: |
-          terraform apply \
-            -var="aws_access_key=${{ secrets.AWS_ACCESS_KEY_ID }}" \
-            -var="aws_secret_key=${{ secrets.AWS_SECRET_ACCESS_KEY }}" \
-            -var="key_pair_name=${{ secrets.KEY_PAIR_NAME }}" \
-            -var="private_key_path=/tmp/ec2_key.pem" \
-            -auto-approve \
-            tfplan
+          terraform apply -auto-approve tfplan
 
       - name: Capture Terraform Outputs
         id: outputs
