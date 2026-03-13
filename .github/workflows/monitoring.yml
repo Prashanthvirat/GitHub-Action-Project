@@ -1,11 +1,12 @@
 name: Deploy Monitoring Stack
 
 on:
-  workflow_run:
-    workflows: ["Terraform CI/CD Pipeline"]
-    types: [completed]
-    branches: [main]
   workflow_dispatch:
+    inputs:
+      wait_minutes:
+        description: 'Minutes to wait for EKS cluster to be ready'
+        required: false
+        default: '5'
 
 env:
   AWS_REGION: ap-south-1
@@ -15,7 +16,6 @@ jobs:
   deploy-monitoring:
     name: 📊 Deploy Prometheus & Grafana
     runs-on: ubuntu-latest
-    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
 
     steps:
       - name: Checkout code
@@ -37,6 +37,42 @@ jobs:
         uses: azure/setup-helm@v3
         with:
           version: 'v3.14.0'
+
+      - name: Wait for EKS cluster to be ready
+        run: |
+          echo "Checking if EKS cluster '${{ env.EKS_CLUSTER }}' exists..."
+          MAX_WAIT=30   # max 30 minutes
+          WAITED=0
+          INTERVAL=2    # check every 2 minutes
+
+          while true; do
+            STATUS=$(aws eks describe-cluster \
+              --name ${{ env.EKS_CLUSTER }} \
+              --region ${{ env.AWS_REGION }} \
+              --query "cluster.status" \
+              --output text 2>/dev/null || echo "NOT_FOUND")
+
+            echo "Cluster status: $STATUS (waited ${WAITED} min)"
+
+            if [ "$STATUS" == "ACTIVE" ]; then
+              echo "✅ EKS cluster is ACTIVE!"
+              break
+            elif [ "$STATUS" == "NOT_FOUND" ]; then
+              echo "⏳ Cluster not found yet — still being created by eksctl on EC2..."
+            else
+              echo "⏳ Cluster status is $STATUS — waiting..."
+            fi
+
+            if [ "$WAITED" -ge "$MAX_WAIT" ]; then
+              echo "❌ Timed out after ${MAX_WAIT} minutes waiting for EKS cluster"
+              echo "The EKS cluster may still be creating via eksctl on EC2."
+              echo "Please re-run this workflow manually once the cluster is ready."
+              exit 1
+            fi
+
+            sleep $((INTERVAL * 60))
+            WAITED=$((WAITED + INTERVAL))
+          done
 
       - name: Update kubeconfig
         run: |
@@ -80,14 +116,17 @@ jobs:
         run: |
           echo "Waiting for LoadBalancer IPs..."
           sleep 60
-          GRAFANA_LB=$(kubectl get svc kube-prometheus-stack-grafana -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
-          PROMETHEUS_LB=$(kubectl get svc kube-prometheus-stack-prometheus -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
-          ALERTMANAGER_LB=$(kubectl get svc kube-prometheus-stack-alertmanager -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
+          GRAFANA_LB=$(kubectl get svc kube-prometheus-stack-grafana -n monitoring \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
+          PROMETHEUS_LB=$(kubectl get svc kube-prometheus-stack-prometheus -n monitoring \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
+          ALERTMANAGER_LB=$(kubectl get svc kube-prometheus-stack-alertmanager -n monitoring \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
 
           echo "### 📊 Monitoring Endpoints" >> $GITHUB_STEP_SUMMARY
           echo "| Service | URL |" >> $GITHUB_STEP_SUMMARY
           echo "|---------|-----|" >> $GITHUB_STEP_SUMMARY
-          echo "| Grafana | http://$GRAFANA_LB (admin / \$GRAFANA_ADMIN_PASSWORD) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Grafana | http://$GRAFANA_LB (admin / your-password) |" >> $GITHUB_STEP_SUMMARY
           echo "| Prometheus | http://$PROMETHEUS_LB:9090 |" >> $GITHUB_STEP_SUMMARY
           echo "| Alertmanager | http://$ALERTMANAGER_LB:9093 |" >> $GITHUB_STEP_SUMMARY
 
