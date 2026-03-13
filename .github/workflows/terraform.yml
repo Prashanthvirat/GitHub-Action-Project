@@ -1,4 +1,3 @@
-````yaml
 name: Terraform CI/CD Pipeline
 
 on:
@@ -256,4 +255,3 @@ jobs:
             -var="key_pair_name=${{ secrets.KEY_PAIR_NAME }}" \
             -var="private_key_path=/tmp/ec2_key.pem" \
             -auto-approve
-````
