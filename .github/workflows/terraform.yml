@@ -4,63 +4,224 @@ on:
   push:
     branches:
       - main
+      - develop
   pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Terraform action"
+        required: true
+        default: "plan"
+        type: choice
+        options:
+          - plan
+          - apply
+          - destroy
 
 env:
-  AWS_REGION: ap-south-1
+  TF_VERSION: "1.7.0"
+  AWS_REGION: "ap-south-1"
+  TF_WORKING_DIR: "."
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+  pull-requests: write
 
 jobs:
-  terraform:
-    name: Terraform Deploy
+
+# -------------------------------
+# JOB 1: SECURITY SCAN
+# -------------------------------
+  security-scan:
+    name: Security Scan
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-    # Checkout Repository
-    - name: Checkout Code
-      uses: actions/checkout@v4
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: .
+          framework: terraform
+          soft_fail: true
+          output_format: sarif
+          output_file_path: checkov-results.sarif
 
-    # Configure AWS Credentials
-    - name: Configure AWS Credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
+      - name: Upload Security Report
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        continue-on-error: true
+        with:
+          sarif_file: checkov-results.sarif
 
-    # Setup Terraform
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v3
+      - name: Run tfsec
+        uses: aquasecurity/tfsec-action@v1.0.0
+        with:
+          soft_fail: true
 
-    # Terraform Init
-    - name: Terraform Init
-      run: terraform init
+# -------------------------------
+# JOB 2: TERRAFORM PLAN
+# -------------------------------
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    needs: security-scan
 
-    # Terraform Format Check
-    - name: Terraform Format
-      run: terraform fmt -check
+    defaults:
+      run:
+        working-directory: ${{ env.TF_WORKING_DIR }}
 
-    # Terraform Validate
-    - name: Terraform Validate
-      run: terraform validate
+    steps:
 
-    # Terraform Plan
-    - name: Terraform Plan
-      run: terraform plan -out=tfplan
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-    # Upload Plan Artifact
-    - name: Upload Plan Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: tfplan
-        path: tfplan
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
 
-    # Download Plan Artifact
-    - name: Download Plan Artifact
-      uses: actions/download-artifact@v4
-      with:
-        name: tfplan
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
 
-    # Terraform Apply
-    - name: Terraform Apply
-      run: terraform apply -auto-approve tfplan
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+        continue-on-error: true
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=terraform/project/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}"
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        run: |
+          terraform plan -out=tfplan -no-color | tee plan_output.txt
+
+      - name: Upload Plan Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan
+          path: |
+            tfplan
+            plan_output.txt
+
+# -------------------------------
+# JOB 3: TERRAFORM APPLY
+# -------------------------------
+  terraform-apply:
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+    needs: terraform-plan
+
+    if: |
+      (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'apply')
+
+    defaults:
+      run:
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+    steps:
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=terraform/project/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}"
+
+      - name: Download Plan Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-plan
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
+
+      - name: Show Outputs
+        run: terraform output
+
+      - name: Slack Notification
+        if: always()
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": "Terraform Apply ${{ job.status }} for repo ${{ github.repository }} on branch ${{ github.ref_name }}"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        continue-on-error: true
+
+# -------------------------------
+# JOB 4: TERRAFORM DESTROY
+# -------------------------------
+  terraform-destroy:
+    name: Terraform Destroy
+    runs-on: ubuntu-latest
+
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'destroy'
+
+    defaults:
+      run:
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+    steps:
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=terraform/project/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}"
+
+      - name: Terraform Destroy
+        run: terraform destroy -auto-approve
