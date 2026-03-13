@@ -11,9 +11,9 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: 'Terraform action to run'
+        description: "Terraform action"
         required: true
-        default: 'plan'
+        default: "plan"
         type: choice
         options:
           - plan
@@ -33,9 +33,9 @@ permissions:
 
 jobs:
 
-# ─────────────────────────────────────────────
+# -------------------------------
 # JOB 1: SECURITY SCAN
-# ─────────────────────────────────────────────
+# -------------------------------
   security-scan:
     name: Security Scan
     runs-on: ubuntu-latest
@@ -47,13 +47,13 @@ jobs:
       - name: Run Checkov
         uses: bridgecrewio/checkov-action@master
         with:
-          directory: ${{ env.TF_WORKING_DIR }}
+          directory: .
           framework: terraform
           soft_fail: true
           output_format: sarif
           output_file_path: checkov-results.sarif
 
-      - name: Upload Security Results
+      - name: Upload Security Report
         uses: github/codeql-action/upload-sarif@v3
         if: always()
         continue-on-error: true
@@ -65,20 +65,20 @@ jobs:
         with:
           soft_fail: true
 
-# ─────────────────────────────────────────────
+# -------------------------------
 # JOB 2: TERRAFORM PLAN
-# ─────────────────────────────────────────────
+# -------------------------------
   terraform-plan:
     name: Terraform Plan
     runs-on: ubuntu-latest
     needs: security-scan
-    environment: plan
 
     defaults:
       run:
         working-directory: ${{ env.TF_WORKING_DIR }}
 
     steps:
+
       - name: Checkout Code
         uses: actions/checkout@v4
 
@@ -93,11 +93,6 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
-
-      - name: Write EC2 Private Key
-        run: |
-          echo "${{ secrets.EC2_PRIVATE_KEY }}" > /tmp/ec2_key.pem
-          chmod 600 /tmp/ec2_key.pem
 
       - name: Terraform Format Check
         run: terraform fmt -check -recursive
@@ -116,11 +111,7 @@ jobs:
 
       - name: Terraform Plan
         run: |
-          terraform plan \
-            -var="key_pair_name=${{ secrets.KEY_PAIR_NAME }}" \
-            -var="private_key_path=/tmp/ec2_key.pem" \
-            -out=tfplan \
-            -no-color | tee plan_output.txt
+          terraform plan -out=tfplan -no-color | tee plan_output.txt
 
       - name: Upload Plan Artifact
         uses: actions/upload-artifact@v4
@@ -130,28 +121,13 @@ jobs:
             tfplan
             plan_output.txt
 
-      - name: Comment Plan on PR
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const plan = fs.readFileSync('plan_output.txt', 'utf8');
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: "### Terraform Plan\n```hcl\n" + plan.substring(0,65000) + "\n```"
-            })
-
-# ─────────────────────────────────────────────
+# -------------------------------
 # JOB 3: TERRAFORM APPLY
-# ─────────────────────────────────────────────
+# -------------------------------
   terraform-apply:
     name: Terraform Apply
     runs-on: ubuntu-latest
     needs: terraform-plan
-    environment: production
 
     if: |
       (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
@@ -162,6 +138,7 @@ jobs:
         working-directory: ${{ env.TF_WORKING_DIR }}
 
     steps:
+
       - name: Checkout Code
         uses: actions/checkout@v4
 
@@ -193,11 +170,8 @@ jobs:
       - name: Terraform Apply
         run: terraform apply -auto-approve tfplan
 
-      - name: Capture Outputs
-        id: outputs
-        run: |
-          terraform output -json > outputs.json
-          echo "EC2_IP=$(terraform output -raw ec2_public_ip 2>/dev/null || echo N/A)" >> $GITHUB_OUTPUT
+      - name: Show Outputs
+        run: terraform output
 
       - name: Slack Notification
         if: always()
@@ -205,19 +179,18 @@ jobs:
         with:
           payload: |
             {
-              "text": "Terraform Apply ${{ job.status }}\nRepo: ${{ github.repository }}\nBranch: ${{ github.ref_name }}\nEC2 IP: ${{ steps.outputs.outputs.EC2_IP }}"
+              "text": "Terraform Apply ${{ job.status }} for repo ${{ github.repository }} on branch ${{ github.ref_name }}"
             }
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         continue-on-error: true
 
-# ─────────────────────────────────────────────
-# JOB 4: DESTROY
-# ─────────────────────────────────────────────
+# -------------------------------
+# JOB 4: TERRAFORM DESTROY
+# -------------------------------
   terraform-destroy:
     name: Terraform Destroy
     runs-on: ubuntu-latest
-    environment: destroy-approval
 
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'destroy'
 
@@ -226,6 +199,7 @@ jobs:
         working-directory: ${{ env.TF_WORKING_DIR }}
 
     steps:
+
       - name: Checkout Code
         uses: actions/checkout@v4
 
@@ -250,8 +224,4 @@ jobs:
             -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}"
 
       - name: Terraform Destroy
-        run: |
-          terraform destroy \
-            -var="key_pair_name=${{ secrets.KEY_PAIR_NAME }}" \
-            -var="private_key_path=/tmp/ec2_key.pem" \
-            -auto-approve
+        run: terraform destroy -auto-approve
