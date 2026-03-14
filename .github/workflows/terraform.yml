@@ -249,6 +249,16 @@ jobs:
           echo "SHA tag : $ECR_REGISTRY/$ECR_REPO:$SHORT_SHA"
           echo "Latest  : $ECR_REGISTRY/$ECR_REPO:latest"
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Generate package-lock.json
+        run: |
+          npm install
+          ls -la package-lock.json
+
       - name: Build Docker image
         run: |
           docker build \
