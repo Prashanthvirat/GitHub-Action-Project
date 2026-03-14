@@ -104,15 +104,6 @@ jobs:
             --timeout 20m \
             --wait
 
-      - name: Install Node Exporter
-        run: |
-          helm upgrade --install node-exporter \
-            prometheus-community/prometheus-node-exporter \
-            --namespace monitoring \
-            --set service.type=ClusterIP \
-            --timeout 5m \
-            --wait
-
       - name: Wait for LoadBalancers
         run: |
           echo "Waiting for Grafana LoadBalancer (up to 5 min)..."
