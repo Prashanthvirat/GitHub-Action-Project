@@ -109,19 +109,8 @@ sudo mv /tmp/eksctl /usr/local/bin
 rm -f eksctl.tar.gz
 eksctl version
 
-# ── EKS Cluster ────────────────────────────────────────
-echo "[12/12] Creating EKS cluster..."
-if eksctl get cluster --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION" &>/dev/null; then
-  echo "Cluster exists, deleting first..."
-  eksctl delete cluster --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION" --wait
-fi
-
-eksctl create cluster \
-  --name "$EKS_CLUSTER_NAME" \
-  --region "$AWS_REGION" \
-  --node-type "$INSTANCE_TYPE" \
-  --zones "${AWS_REGION}a,${AWS_REGION}b"
-
+# ── EKS kubeconfig (cluster created by Terraform) ──────
+echo "[12/12] Updating kubeconfig for EKS cluster..."
 aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER_NAME"
 
 # ── kubeconfig for ubuntu + jenkins ────────────────────
