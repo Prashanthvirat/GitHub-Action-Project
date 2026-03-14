@@ -11,6 +11,7 @@ on:
 env:
   AWS_REGION: ap-south-1
   EKS_CLUSTER: balu-cluster22
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   deploy-monitoring:
