@@ -83,7 +83,12 @@ jobs:
             --set grafana.adminPassword="${{ secrets.GRAFANA_ADMIN_PASSWORD }}" \
             --set grafana.service.type=LoadBalancer \
             --set prometheus.service.type=LoadBalancer \
-            --set alertmanager.enabled=false \
+            --set alertmanager.enabled=true \
+            --set alertmanager.service.type=LoadBalancer \
+            --set alertmanager.alertmanagerSpec.resources.requests.cpu=50m \
+            --set alertmanager.alertmanagerSpec.resources.requests.memory=64Mi \
+            --set alertmanager.alertmanagerSpec.resources.limits.cpu=100m \
+            --set alertmanager.alertmanagerSpec.resources.limits.memory=128Mi \
             --set grafana.persistence.enabled=false \
             --set grafana.sidecar.dashboards.enabled=false \
             --set grafana.sidecar.datasources.enabled=false \
