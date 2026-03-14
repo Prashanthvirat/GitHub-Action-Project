@@ -239,15 +239,14 @@ jobs:
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
           ECR_REGISTRY="${{ steps.login-ecr.outputs.registry }}"
           ECR_REPO="balu-elastic-ecr"
-          echo "SHORT_SHA=$SHORT_SHA"                          >> $GITHUB_OUTPUT
-          echo "IMAGE_TAG=$SHORT_SHA"                          >> $GITHUB_OUTPUT
-          echo "ECR_REGISTRY=$ECR_REGISTRY"                   >> $GITHUB_OUTPUT
-          echo "ECR_REPO=$ECR_REPO"                           >> $GITHUB_OUTPUT
-          echo "FULL_IMAGE=$ECR_REGISTRY/$ECR_REPO:$SHORT_SHA" >> $GITHUB_OUTPUT
-          echo "LATEST_IMAGE=$ECR_REGISTRY/$ECR_REPO:latest"  >> $GITHUB_OUTPUT
-          echo "--- Image tags ---"
-          echo "SHA tag : $ECR_REGISTRY/$ECR_REPO:$SHORT_SHA"
-          echo "Latest  : $ECR_REGISTRY/$ECR_REPO:latest"
+          IMAGE_TAG="v$(date +'%Y%m%d')-$SHORT_SHA"
+          echo "SHORT_SHA=$SHORT_SHA"                           >> $GITHUB_OUTPUT
+          echo "IMAGE_TAG=$IMAGE_TAG"                           >> $GITHUB_OUTPUT
+          echo "ECR_REGISTRY=$ECR_REGISTRY"                    >> $GITHUB_OUTPUT
+          echo "ECR_REPO=$ECR_REPO"                            >> $GITHUB_OUTPUT
+          echo "FULL_IMAGE=$ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "--- Image tag ---"
+          echo "Tag: $ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -265,7 +264,6 @@ jobs:
             --build-arg APP_VERSION=${{ steps.tags.outputs.SHORT_SHA }} \
             --build-arg BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ") \
             --tag ${{ steps.tags.outputs.FULL_IMAGE }} \
-            --tag ${{ steps.tags.outputs.LATEST_IMAGE }} \
             --file Dockerfile \
             .
 
@@ -276,11 +274,11 @@ jobs:
           format: table
           exit-code: 0
           severity: CRITICAL,HIGH
+          skip-dirs: /usr/local/lib/node_modules/npm,/opt/yarn-v1.22.22
 
       - name: Push image to ECR
         run: |
           docker push ${{ steps.tags.outputs.FULL_IMAGE }}
-          docker push ${{ steps.tags.outputs.LATEST_IMAGE }}
 
       - name: Show image details in Summary
         run: |
@@ -291,7 +289,6 @@ jobs:
           echo "| Repository | ${{ steps.tags.outputs.ECR_REPO }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Image Tag | ${{ steps.tags.outputs.IMAGE_TAG }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Full Image | ${{ steps.tags.outputs.FULL_IMAGE }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Latest | ${{ steps.tags.outputs.ECR_REGISTRY }}/${{ steps.tags.outputs.ECR_REPO }}:latest |" >> $GITHUB_STEP_SUMMARY
 
   # ─────────────────────────────────────────────
   # JOB 5: Terraform Destroy (manual only)
