@@ -27,3 +27,28 @@ output "vpc_id" {
   description = "VPC ID"
   value       = aws_vpc.vpc.id
 }
+
+output "eks_cluster_name" {
+  description = "EKS Cluster Name"
+  value       = aws_eks_cluster.eks.name
+}
+
+output "eks_cluster_endpoint" {
+  description = "EKS Cluster Endpoint"
+  value       = aws_eks_cluster.eks.endpoint
+}
+
+output "eks_cluster_version" {
+  description = "EKS Cluster Kubernetes Version"
+  value       = aws_eks_cluster.eks.version
+}
+
+output "eks_node_group_status" {
+  description = "EKS Node Group Status"
+  value       = aws_eks_node_group.eks_nodes.status
+}
+
+output "kubeconfig_command" {
+  description = "Command to update kubeconfig"
+  value       = "aws eks update-kubeconfig --region ${var.aws_region} --name ${aws_eks_cluster.eks.name}"
+}
