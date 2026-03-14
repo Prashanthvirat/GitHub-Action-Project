@@ -245,8 +245,10 @@ jobs:
           echo "ECR_REGISTRY=$ECR_REGISTRY"                    >> $GITHUB_OUTPUT
           echo "ECR_REPO=$ECR_REPO"                            >> $GITHUB_OUTPUT
           echo "FULL_IMAGE=$ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG" >> $GITHUB_OUTPUT
-          echo "--- Image tag ---"
-          echo "Tag: $ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG"
+          echo "LATEST_IMAGE=$ECR_REGISTRY/$ECR_REPO:latest"   >> $GITHUB_OUTPUT
+          echo "--- Image tags ---"
+          echo "SHA tag : $ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG"
+          echo "Latest  : $ECR_REGISTRY/$ECR_REPO:latest"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -264,6 +266,7 @@ jobs:
             --build-arg APP_VERSION=${{ steps.tags.outputs.SHORT_SHA }} \
             --build-arg BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ") \
             --tag ${{ steps.tags.outputs.FULL_IMAGE }} \
+            --tag ${{ steps.tags.outputs.LATEST_IMAGE }} \
             --file Dockerfile \
             .
 
@@ -279,6 +282,7 @@ jobs:
       - name: Push image to ECR
         run: |
           docker push ${{ steps.tags.outputs.FULL_IMAGE }}
+          docker push ${{ steps.tags.outputs.LATEST_IMAGE }}
 
       - name: Show image details in Summary
         run: |
@@ -289,9 +293,77 @@ jobs:
           echo "| Repository | ${{ steps.tags.outputs.ECR_REPO }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Image Tag | ${{ steps.tags.outputs.IMAGE_TAG }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Full Image | ${{ steps.tags.outputs.FULL_IMAGE }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Latest | ${{ steps.tags.outputs.LATEST_IMAGE }} |" >> $GITHUB_STEP_SUMMARY
 
   # ─────────────────────────────────────────────
-  # JOB 5: Terraform Destroy (manual only)
+  # JOB 5: Deploy to EKS
+  # ─────────────────────────────────────────────
+  deploy-to-eks:
+    name: 🚢 Deploy to EKS
+    runs-on: ubuntu-latest
+    needs: docker-build-push
+    if: |
+      (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'apply')
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: "v1.29.0"
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ env.AWS_REGION }} \
+            --name balu-cluster22
+
+      - name: Set image tag
+        id: tag
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          IMAGE_TAG="v$(date +'%Y%m%d')-$SHORT_SHA"
+          ECR_REGISTRY="122980875414.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+          FULL_IMAGE="$ECR_REGISTRY/balu-elastic-ecr:$IMAGE_TAG"
+          echo "FULL_IMAGE=$FULL_IMAGE" >> $GITHUB_OUTPUT
+          echo "Deploying image: $FULL_IMAGE"
+
+      - name: Deploy to EKS
+        run: |
+          kubectl apply -f k8s-deployment.yml
+          kubectl set image deployment/cloudshield-app \
+            cloudshield-app=${{ steps.tag.outputs.FULL_IMAGE }} \
+            -n app
+          kubectl rollout status deployment/cloudshield-app -n app --timeout=5m
+
+      - name: Get app URL
+        run: |
+          echo "Waiting for LoadBalancer..."
+          sleep 20
+          APP_URL=$(kubectl get svc cloudshield-app-svc -n app \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo 'pending')
+          echo "======================================"
+          echo " App URL: http://$APP_URL"
+          echo "======================================"
+          echo "### 🚢 App Deployed to EKS" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Image | ${{ steps.tag.outputs.FULL_IMAGE }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| App URL | http://$APP_URL |" >> $GITHUB_STEP_SUMMARY
+          echo "| Health | http://$APP_URL/health |" >> $GITHUB_STEP_SUMMARY
+
+  # ─────────────────────────────────────────────
+  # JOB 6: Terraform Destroy (manual only)
   # ─────────────────────────────────────────────
   terraform-destroy:
     name: 💣 Terraform Destroy
