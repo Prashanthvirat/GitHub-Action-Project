@@ -208,7 +208,77 @@ jobs:
           echo "| ECR URL | ${{ steps.outputs.outputs.ECR_URL }} |" >> $GITHUB_STEP_SUMMARY
 
   # ─────────────────────────────────────────────
-  # JOB 4: Terraform Destroy (manual only)
+  # JOB 4: Docker Build & Push to ECR
+  # ─────────────────────────────────────────────
+  docker-build-push:
+    name: 🐳 Docker Build & Push to ECR
+    runs-on: ubuntu-latest
+    needs: terraform-apply
+    if: |
+      (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'apply')
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image tags
+        id: tags
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          echo "SHORT_SHA=$SHORT_SHA" >> $GITHUB_OUTPUT
+          echo "IMAGE_TAG=$SHORT_SHA" >> $GITHUB_OUTPUT
+          echo "ECR_REGISTRY=${{ steps.login-ecr.outputs.registry }}" >> $GITHUB_OUTPUT
+          echo "ECR_REPO=${{ secrets.ECR_REPO_NAME }}" >> $GITHUB_OUTPUT
+          echo "FULL_IMAGE=${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPO_NAME }}:$SHORT_SHA" >> $GITHUB_OUTPUT
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            --build-arg APP_VERSION=${{ steps.tags.outputs.SHORT_SHA }} \
+            --build-arg BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ") \
+            --tag ${{ steps.tags.outputs.FULL_IMAGE }} \
+            --tag ${{ steps.tags.outputs.ECR_REGISTRY }}/${{ steps.tags.outputs.ECR_REPO }}:latest \
+            --file Dockerfile \
+            .
+
+      - name: Run Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.tags.outputs.FULL_IMAGE }}
+          format: table
+          exit-code: 0
+          severity: CRITICAL,HIGH
+
+      - name: Push image to ECR
+        run: |
+          docker push ${{ steps.tags.outputs.FULL_IMAGE }}
+          docker push ${{ steps.tags.outputs.ECR_REGISTRY }}/${{ steps.tags.outputs.ECR_REPO }}:latest
+
+      - name: Show image details in Summary
+        run: |
+          echo "### 🐳 Docker Image Pushed to ECR" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| ECR Registry | ${{ steps.tags.outputs.ECR_REGISTRY }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Repository | ${{ steps.tags.outputs.ECR_REPO }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Image Tag | ${{ steps.tags.outputs.IMAGE_TAG }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Full Image | ${{ steps.tags.outputs.FULL_IMAGE }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Latest | ${{ steps.tags.outputs.ECR_REGISTRY }}/${{ steps.tags.outputs.ECR_REPO }}:latest |" >> $GITHUB_STEP_SUMMARY
+
+  # ─────────────────────────────────────────────
+  # JOB 5: Terraform Destroy (manual only)
   # ─────────────────────────────────────────────
   terraform-destroy:
     name: 💣 Terraform Destroy
