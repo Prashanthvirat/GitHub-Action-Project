@@ -237,11 +237,17 @@ jobs:
         id: tags
         run: |
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-          echo "SHORT_SHA=$SHORT_SHA" >> $GITHUB_OUTPUT
-          echo "IMAGE_TAG=$SHORT_SHA" >> $GITHUB_OUTPUT
-          echo "ECR_REGISTRY=${{ steps.login-ecr.outputs.registry }}" >> $GITHUB_OUTPUT
-          echo "ECR_REPO=${{ secrets.ECR_REPO_NAME }}" >> $GITHUB_OUTPUT
-          echo "FULL_IMAGE=${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPO_NAME }}:$SHORT_SHA" >> $GITHUB_OUTPUT
+          ECR_REGISTRY="${{ steps.login-ecr.outputs.registry }}"
+          ECR_REPO="balu-elastic-ecr"
+          echo "SHORT_SHA=$SHORT_SHA"                          >> $GITHUB_OUTPUT
+          echo "IMAGE_TAG=$SHORT_SHA"                          >> $GITHUB_OUTPUT
+          echo "ECR_REGISTRY=$ECR_REGISTRY"                   >> $GITHUB_OUTPUT
+          echo "ECR_REPO=$ECR_REPO"                           >> $GITHUB_OUTPUT
+          echo "FULL_IMAGE=$ECR_REGISTRY/$ECR_REPO:$SHORT_SHA" >> $GITHUB_OUTPUT
+          echo "LATEST_IMAGE=$ECR_REGISTRY/$ECR_REPO:latest"  >> $GITHUB_OUTPUT
+          echo "--- Image tags ---"
+          echo "SHA tag : $ECR_REGISTRY/$ECR_REPO:$SHORT_SHA"
+          echo "Latest  : $ECR_REGISTRY/$ECR_REPO:latest"
 
       - name: Build Docker image
         run: |
@@ -249,7 +255,7 @@ jobs:
             --build-arg APP_VERSION=${{ steps.tags.outputs.SHORT_SHA }} \
             --build-arg BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ") \
             --tag ${{ steps.tags.outputs.FULL_IMAGE }} \
-            --tag ${{ steps.tags.outputs.ECR_REGISTRY }}/${{ steps.tags.outputs.ECR_REPO }}:latest \
+            --tag ${{ steps.tags.outputs.LATEST_IMAGE }} \
             --file Dockerfile \
             .
 
@@ -264,7 +270,7 @@ jobs:
       - name: Push image to ECR
         run: |
           docker push ${{ steps.tags.outputs.FULL_IMAGE }}
-          docker push ${{ steps.tags.outputs.ECR_REGISTRY }}/${{ steps.tags.outputs.ECR_REPO }}:latest
+          docker push ${{ steps.tags.outputs.LATEST_IMAGE }}
 
       - name: Show image details in Summary
         run: |
