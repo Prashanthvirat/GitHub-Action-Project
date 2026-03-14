@@ -2,10 +2,6 @@ name: Deploy Monitoring Stack
 
 on:
   workflow_dispatch:
-  workflow_run:
-    workflows: ["Terraform CI/CD Pipeline"]
-    types:
-      - completed
 
 env:
   AWS_REGION: "ap-south-1"
@@ -16,7 +12,6 @@ jobs:
   deploy-monitoring:
     name: 📊 Deploy Prometheus & Grafana
     runs-on: ubuntu-latest
-    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
 
     steps:
       - name: Checkout code
@@ -31,6 +26,8 @@ jobs:
 
       - name: Setup kubectl
         uses: azure/setup-kubectl@v3
+        with:
+          version: "v1.29.0"
 
       - name: Setup Helm
         uses: azure/setup-helm@v3
@@ -47,10 +44,8 @@ jobs:
         run: |
           echo "=== Nodes ==="
           kubectl get nodes -o wide
-          echo "=== Node Resources ==="
+          echo "=== Allocated Resources ==="
           kubectl describe nodes | grep -A8 "Allocated resources" || true
-          echo "=== Existing pods in monitoring ==="
-          kubectl get pods -n monitoring 2>/dev/null || echo "namespace not yet created"
 
       - name: Add Helm repos
         run: |
@@ -62,15 +57,22 @@ jobs:
         run: |
           kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Uninstall existing release (if failed)
+      - name: Cleanup failed release
         run: |
           if helm status kube-prometheus-stack -n monitoring &>/dev/null; then
-            STATUS=$(helm status kube-prometheus-stack -n monitoring -o json | python3 -c "import sys,json; print(json.load(sys.stdin)['info']['status'])")
+            STATUS=$(helm status kube-prometheus-stack -n monitoring -o json \
+              | python3 -c "import sys,json; print(json.load(sys.stdin)['info']['status'])")
+            echo "Existing release status: $STATUS"
             if [ "$STATUS" != "deployed" ]; then
-              echo "Removing failed release..."
-              helm uninstall kube-prometheus-stack -n monitoring || true
+              echo "Removing failed/stuck release..."
+              helm uninstall kube-prometheus-stack -n monitoring --wait || true
               kubectl delete pods --all -n monitoring --force --grace-period=0 2>/dev/null || true
+              sleep 10
+            else
+              echo "Release already deployed cleanly — skipping uninstall"
             fi
+          else
+            echo "No existing release found"
           fi
 
       - name: Deploy kube-prometheus-stack
@@ -78,12 +80,15 @@ jobs:
           helm upgrade --install kube-prometheus-stack \
             prometheus-community/kube-prometheus-stack \
             --namespace monitoring \
-            --set grafana.adminPassword='admin@Grafana123' \
+            --set grafana.adminPassword="${{ secrets.GRAFANA_ADMIN_PASSWORD }}" \
             --set grafana.service.type=LoadBalancer \
             --set prometheus.service.type=LoadBalancer \
-            --set prometheusOperator.service.type=ClusterIP \
             --set alertmanager.enabled=false \
+            --set grafana.persistence.enabled=false \
+            --set grafana.sidecar.dashboards.enabled=false \
+            --set grafana.sidecar.datasources.enabled=false \
             --set prometheus.prometheusSpec.retention=6h \
+            --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
             --set prometheus.prometheusSpec.resources.requests.cpu=100m \
             --set prometheus.prometheusSpec.resources.requests.memory=256Mi \
             --set prometheus.prometheusSpec.resources.limits.cpu=500m \
@@ -96,8 +101,6 @@ jobs:
             --set prometheusOperator.resources.requests.memory=64Mi \
             --set kube-state-metrics.resources.requests.cpu=10m \
             --set kube-state-metrics.resources.requests.memory=32Mi \
-            --set nodeExporter.enabled=true \
-            --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
             --timeout 20m \
             --wait
 
@@ -112,7 +115,7 @@ jobs:
 
       - name: Wait for LoadBalancers
         run: |
-          echo "Waiting for Grafana LoadBalancer..."
+          echo "Waiting for Grafana LoadBalancer (up to 5 min)..."
           for i in $(seq 1 20); do
             GRAFANA_LB=$(kubectl get svc kube-prometheus-stack-grafana \
               -n monitoring \
@@ -131,7 +134,6 @@ jobs:
           kubectl get pods -n monitoring
           echo "=== Services ==="
           kubectl get svc -n monitoring
-          echo ""
           GRAFANA_LB=$(kubectl get svc kube-prometheus-stack-grafana \
             -n monitoring \
             -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo 'pending')
@@ -141,7 +143,6 @@ jobs:
           echo "======================================"
           echo " Grafana:    http://$GRAFANA_LB"
           echo " Prometheus: http://$PROMETHEUS_LB:9090"
-          echo " Grafana login: admin / admin@Grafana123"
           echo "======================================"
           echo "### 📊 Monitoring Stack" >> $GITHUB_STEP_SUMMARY
           echo "| Tool | URL |" >> $GITHUB_STEP_SUMMARY
