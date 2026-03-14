@@ -45,7 +45,7 @@ ENV NODE_ENV=production \
 USER appuser
 
 # Expose port
-EXPOSE 3000
+EXPOSE 8080
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
