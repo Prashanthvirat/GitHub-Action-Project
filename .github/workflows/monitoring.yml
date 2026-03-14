@@ -89,6 +89,7 @@ jobs:
             --set grafana.sidecar.datasources.enabled=false \
             --set prometheus.prometheusSpec.retention=6h \
             --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
+            --set nodeExporter.enabled=false \
             --set prometheus.prometheusSpec.resources.requests.cpu=100m \
             --set prometheus.prometheusSpec.resources.requests.memory=256Mi \
             --set prometheus.prometheusSpec.resources.limits.cpu=500m \
@@ -102,6 +103,19 @@ jobs:
             --set kube-state-metrics.resources.requests.cpu=10m \
             --set kube-state-metrics.resources.requests.memory=32Mi \
             --timeout 20m \
+            --wait
+
+      - name: Install Node Exporter
+        run: |
+          helm upgrade --install node-exporter \
+            prometheus-community/prometheus-node-exporter \
+            --namespace monitoring \
+            --set service.type=ClusterIP \
+            --set resources.requests.cpu=20m \
+            --set resources.requests.memory=32Mi \
+            --set resources.limits.cpu=100m \
+            --set resources.limits.memory=64Mi \
+            --timeout 5m \
             --wait
 
       - name: Wait for LoadBalancers
