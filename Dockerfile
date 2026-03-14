@@ -1,56 +1,23 @@
-# ─────────────────────────────────────────
-# Stage 1: Builder
-# ─────────────────────────────────────────
-FROM node:18-alpine AS builder
+Ga# Build Stage
+FROM maven:3.9.6-eclipse-temurin-17 AS build
 
 WORKDIR /app
 
-# Copy package files first (layer caching)
-COPY package*.json ./
+COPY pom.xml .
+RUN mvn -B -q -e -DskipTests dependency:go-offline
 
-# Install production dependencies (package-lock.json must exist)
-RUN npm ci --omit=dev && \
-    npm cache clean --force
+COPY src ./src
 
-# Copy source code
-COPY app.js ./
+RUN mvn clean package -DskipTests
 
-# ─────────────────────────────────────────
-# Stage 2: Production
-# ─────────────────────────────────────────
-FROM node:18-alpine AS production
 
-# Security: add non-root user
-RUN addgroup -g 1001 -S appgroup && \
-    adduser  -u 1001 -S appuser -G appgroup
+# Runtime Stage
+FROM eclipse-temurin:17-jdk-alpine
 
 WORKDIR /app
 
-# Copy only production node_modules from builder
-COPY --from=builder --chown=appuser:appgroup /app/node_modules ./node_modules
-COPY --from=builder --chown=appuser:appgroup /app/app.js      ./app.js
-COPY --chown=appuser:appgroup package*.json ./
+COPY --from=build /app/target/*.jar app.jar
 
-# Security hardening
-RUN apk update && \
-    apk upgrade && \
-    apk add --no-cache dumb-init && \
-    rm -rf /var/cache/apk/*
-
-# Set environment
-ENV NODE_ENV=production \
-    PORT=3000
-
-# Use non-root user
-USER appuser
-
-# Expose port
 EXPOSE 8080
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
-
-# Use dumb-init to handle signals properly
-ENTRYPOINT ["dumb-init", "--"]
-CMD ["node", "app.js"]
+ENTRYPOINT ["java","-jar","app.jar"]
