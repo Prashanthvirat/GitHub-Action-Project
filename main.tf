@@ -131,7 +131,7 @@ resource "aws_default_security_group" "sg" {
 # ─────────────────────────────────────────
 resource "aws_ecr_repository" "my_ecr_repo" {
   name                 = "balu-elastic-ecr"
-  image_tag_mutability = "IMMUTABLE" # fixed: was MUTABLE
+  image_tag_mutability = "MUTABLE" # fixed: was MUTABLE
 
   image_scanning_configuration {
     scan_on_push = true
