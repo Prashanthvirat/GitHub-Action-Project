@@ -2,21 +2,21 @@ name: Deploy Monitoring Stack
 
 on:
   workflow_dispatch:
-    inputs:
-      wait_minutes:
-        description: 'Minutes to wait for EKS cluster to be ready'
-        required: false
-        default: '5'
+  workflow_run:
+    workflows: ["Terraform CI/CD Pipeline"]
+    types:
+      - completed
 
 env:
-  AWS_REGION: ap-south-1
-  EKS_CLUSTER: balu-cluster22
+  AWS_REGION: "ap-south-1"
+  EKS_CLUSTER_NAME: "balu-cluster22"
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   deploy-monitoring:
     name: 📊 Deploy Prometheus & Grafana
     runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
 
     steps:
       - name: Checkout code
@@ -31,107 +31,120 @@ jobs:
 
       - name: Setup kubectl
         uses: azure/setup-kubectl@v3
-        with:
-          version: 'v1.29.0'
 
       - name: Setup Helm
         uses: azure/setup-helm@v3
         with:
-          version: 'v3.14.0'
-
-      - name: Wait for EKS cluster to be ready
-        run: |
-          echo "Checking if EKS cluster '${{ env.EKS_CLUSTER }}' exists..."
-          MAX_WAIT=30   # max 30 minutes
-          WAITED=0
-          INTERVAL=2    # check every 2 minutes
-
-          while true; do
-            STATUS=$(aws eks describe-cluster \
-              --name ${{ env.EKS_CLUSTER }} \
-              --region ${{ env.AWS_REGION }} \
-              --query "cluster.status" \
-              --output text 2>/dev/null || echo "NOT_FOUND")
-
-            echo "Cluster status: $STATUS (waited ${WAITED} min)"
-
-            if [ "$STATUS" == "ACTIVE" ]; then
-              echo "✅ EKS cluster is ACTIVE!"
-              break
-            elif [ "$STATUS" == "NOT_FOUND" ]; then
-              echo "⏳ Cluster not found yet — still being created by eksctl on EC2..."
-            else
-              echo "⏳ Cluster status is $STATUS — waiting..."
-            fi
-
-            if [ "$WAITED" -ge "$MAX_WAIT" ]; then
-              echo "❌ Timed out after ${MAX_WAIT} minutes waiting for EKS cluster"
-              echo "The EKS cluster may still be creating via eksctl on EC2."
-              echo "Please re-run this workflow manually once the cluster is ready."
-              exit 1
-            fi
-
-            sleep $((INTERVAL * 60))
-            WAITED=$((WAITED + INTERVAL))
-          done
+          version: "v3.14.0"
 
       - name: Update kubeconfig
         run: |
           aws eks update-kubeconfig \
             --region ${{ env.AWS_REGION }} \
-            --name ${{ env.EKS_CLUSTER }}
+            --name ${{ env.EKS_CLUSTER_NAME }}
 
-      - name: Add Helm Repos
+      - name: Check node capacity
+        run: |
+          echo "=== Nodes ==="
+          kubectl get nodes -o wide
+          echo "=== Node Resources ==="
+          kubectl describe nodes | grep -A8 "Allocated resources" || true
+          echo "=== Existing pods in monitoring ==="
+          kubectl get pods -n monitoring 2>/dev/null || echo "namespace not yet created"
+
+      - name: Add Helm repos
         run: |
           helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
           helm repo add grafana https://grafana.github.io/helm-charts
           helm repo update
 
       - name: Create monitoring namespace
-        run: kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+        run: |
+          kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Uninstall existing release (if failed)
+        run: |
+          if helm status kube-prometheus-stack -n monitoring &>/dev/null; then
+            STATUS=$(helm status kube-prometheus-stack -n monitoring -o json | python3 -c "import sys,json; print(json.load(sys.stdin)['info']['status'])")
+            if [ "$STATUS" != "deployed" ]; then
+              echo "Removing failed release..."
+              helm uninstall kube-prometheus-stack -n monitoring || true
+              kubectl delete pods --all -n monitoring --force --grace-period=0 2>/dev/null || true
+            fi
+          fi
 
       - name: Deploy kube-prometheus-stack
         run: |
           helm upgrade --install kube-prometheus-stack \
             prometheus-community/kube-prometheus-stack \
             --namespace monitoring \
-            --set grafana.adminPassword="${{ secrets.GRAFANA_ADMIN_PASSWORD }}" \
+            --set grafana.adminPassword='admin@Grafana123' \
             --set grafana.service.type=LoadBalancer \
             --set prometheus.service.type=LoadBalancer \
-            --set alertmanager.service.type=LoadBalancer \
+            --set prometheusOperator.service.type=ClusterIP \
+            --set alertmanager.enabled=false \
+            --set prometheus.prometheusSpec.retention=6h \
+            --set prometheus.prometheusSpec.resources.requests.cpu=100m \
+            --set prometheus.prometheusSpec.resources.requests.memory=256Mi \
+            --set prometheus.prometheusSpec.resources.limits.cpu=500m \
+            --set prometheus.prometheusSpec.resources.limits.memory=512Mi \
+            --set grafana.resources.requests.cpu=50m \
+            --set grafana.resources.requests.memory=128Mi \
+            --set grafana.resources.limits.cpu=200m \
+            --set grafana.resources.limits.memory=256Mi \
+            --set prometheusOperator.resources.requests.cpu=50m \
+            --set prometheusOperator.resources.requests.memory=64Mi \
+            --set kube-state-metrics.resources.requests.cpu=10m \
+            --set kube-state-metrics.resources.requests.memory=32Mi \
+            --set nodeExporter.enabled=true \
             --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
-            --set grafana.sidecar.dashboards.enabled=true \
-            --set grafana.sidecar.datasources.enabled=true \
-            --set grafana.persistence.enabled=true \
-            --set grafana.persistence.size=5Gi \
-            --wait \
-            --timeout 10m
+            --timeout 20m \
+            --wait
 
-      - name: Apply Prometheus rules
-        run: kubectl apply -f monitoring/prometheus-rules.yaml
-
-      - name: Apply Grafana dashboards
-        run: kubectl apply -f monitoring/grafana-dashboard.yaml
+      - name: Install Node Exporter
+        run: |
+          helm upgrade --install node-exporter \
+            prometheus-community/prometheus-node-exporter \
+            --namespace monitoring \
+            --set service.type=ClusterIP \
+            --timeout 5m \
+            --wait
 
       - name: Wait for LoadBalancers
         run: |
-          echo "Waiting for LoadBalancer IPs..."
-          sleep 60
-          GRAFANA_LB=$(kubectl get svc kube-prometheus-stack-grafana -n monitoring \
-            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
-          PROMETHEUS_LB=$(kubectl get svc kube-prometheus-stack-prometheus -n monitoring \
-            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
-          ALERTMANAGER_LB=$(kubectl get svc kube-prometheus-stack-alertmanager -n monitoring \
-            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
-
-          echo "### 📊 Monitoring Endpoints" >> $GITHUB_STEP_SUMMARY
-          echo "| Service | URL |" >> $GITHUB_STEP_SUMMARY
-          echo "|---------|-----|" >> $GITHUB_STEP_SUMMARY
-          echo "| Grafana | http://$GRAFANA_LB (admin / your-password) |" >> $GITHUB_STEP_SUMMARY
-          echo "| Prometheus | http://$PROMETHEUS_LB:9090 |" >> $GITHUB_STEP_SUMMARY
-          echo "| Alertmanager | http://$ALERTMANAGER_LB:9093 |" >> $GITHUB_STEP_SUMMARY
+          echo "Waiting for Grafana LoadBalancer..."
+          for i in $(seq 1 20); do
+            GRAFANA_LB=$(kubectl get svc kube-prometheus-stack-grafana \
+              -n monitoring \
+              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+            if [ -n "$GRAFANA_LB" ]; then
+              echo "Grafana LB ready: $GRAFANA_LB"
+              break
+            fi
+            echo "Waiting... ($i/20)"
+            sleep 15
+          done
 
       - name: Verify deployments
         run: |
+          echo "=== Pods ==="
           kubectl get pods -n monitoring
+          echo "=== Services ==="
           kubectl get svc -n monitoring
+          echo ""
+          GRAFANA_LB=$(kubectl get svc kube-prometheus-stack-grafana \
+            -n monitoring \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo 'pending')
+          PROMETHEUS_LB=$(kubectl get svc kube-prometheus-stack-prometheus \
+            -n monitoring \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo 'pending')
+          echo "======================================"
+          echo " Grafana:    http://$GRAFANA_LB"
+          echo " Prometheus: http://$PROMETHEUS_LB:9090"
+          echo " Grafana login: admin / admin@Grafana123"
+          echo "======================================"
+          echo "### 📊 Monitoring Stack" >> $GITHUB_STEP_SUMMARY
+          echo "| Tool | URL |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-----|" >> $GITHUB_STEP_SUMMARY
+          echo "| Grafana | http://$GRAFANA_LB |" >> $GITHUB_STEP_SUMMARY
+          echo "| Prometheus | http://$PROMETHEUS_LB:9090 |" >> $GITHUB_STEP_SUMMARY
