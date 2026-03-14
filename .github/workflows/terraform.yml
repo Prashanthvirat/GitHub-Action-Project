@@ -207,18 +207,6 @@ jobs:
           echo "| SonarQube URL | http://${{ steps.outputs.outputs.EC2_IP }}:9000 |" >> $GITHUB_STEP_SUMMARY
           echo "| ECR URL | ${{ steps.outputs.outputs.ECR_URL }} |" >> $GITHUB_STEP_SUMMARY
 
-      - name: Send Slack Notification
-        if: always()
-        uses: slackapi/slack-github-action@v1.26.0
-        with:
-          payload: |
-            {
-              "text": "${{ job.status == 'success' && '✅' || '❌' }} Terraform Apply *${{ job.status }}*\nRepo: ${{ github.repository }}\nEC2 IP: ${{ steps.outputs.outputs.EC2_IP }}"
-            }
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-        continue-on-error: true
-
   # ─────────────────────────────────────────────
   # JOB 4: Terraform Destroy (manual only)
   # ─────────────────────────────────────────────
