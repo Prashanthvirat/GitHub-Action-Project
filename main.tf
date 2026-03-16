@@ -17,58 +17,6 @@ resource "aws_vpc" "vpc" {
   }
 }
 
-# fixed: VPC flow logs enabled
-resource "aws_flow_log" "vpc_flow_log" {
-  vpc_id          = aws_vpc.vpc.id
-  traffic_type    = "ALL"
-  iam_role_arn    = aws_iam_role.vpc_flow_log_role.arn
-  log_destination = aws_cloudwatch_log_group.vpc_flow_log.arn
-  tags = {
-    Name        = "vpc-flow-log"
-    Environment = var.environment
-  }
-}
-
-resource "aws_cloudwatch_log_group" "vpc_flow_log" {
-  name              = "/aws/vpc/flow-logs"
-  retention_in_days = 30
-  tags = {
-    Name        = "vpc-flow-log-group"
-    Environment = var.environment
-  }
-}
-
-resource "aws_iam_role" "vpc_flow_log_role" {
-  name = "vpc-flow-log-role"
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Action    = "sts:AssumeRole"
-      Effect    = "Allow"
-      Principal = { Service = "vpc-flow-logs.amazonaws.com" }
-    }]
-  })
-}
-
-resource "aws_iam_role_policy" "vpc_flow_log_policy" {
-  name = "vpc-flow-log-policy"
-  role = aws_iam_role.vpc_flow_log_role.id
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "logs:CreateLogGroup",
-        "logs:CreateLogStream",
-        "logs:PutLogEvents",
-        "logs:DescribeLogGroups",
-        "logs:DescribeLogStreams"
-      ]
-      Resource = "*"
-    }]
-  })
-}
-
 resource "aws_subnet" "public" {
   vpc_id                  = aws_vpc.vpc.id
   cidr_block              = "10.0.1.0/24"
@@ -131,7 +79,7 @@ resource "aws_default_security_group" "sg" {
 # ─────────────────────────────────────────
 resource "aws_ecr_repository" "my_ecr_repo" {
   name                 = "balu-elastic-ecr"
-  image_tag_mutability = "MUTABLE" # fixed: was MUTABLE
+  image_tag_mutability = "MUTABLE"
 
   image_scanning_configuration {
     scan_on_push = true
@@ -165,17 +113,15 @@ resource "aws_instance" "my_ec2_instance" {
   subnet_id              = aws_subnet.public.id
   vpc_security_group_ids = [aws_default_security_group.sg.id]
   iam_instance_profile   = aws_iam_instance_profile.eks_profile.name
-  ebs_optimized          = true  # fixed: EBS optimized
-  monitoring             = true  # fixed: detailed monitoring enabled
+  ebs_optimized          = true
+  monitoring             = true
 
-  # fixed: enforce IMDSv2 only (no IMDSv1)
   metadata_options {
     http_endpoint               = "enabled"
     http_tokens                 = "required"
     http_put_response_hop_limit = 1
   }
 
-  # fixed: encrypt root block device
   root_block_device {
     encrypted   = true
     volume_type = "gp3"
@@ -211,121 +157,6 @@ resource "aws_instance" "my_ec2_instance" {
     Name        = "Jenkins-EC2"
     Environment = var.environment
   }
-
-  connection {
-    type        = "ssh"
-    user        = "ubuntu"
-    host        = self.public_ip
-    private_key = file(var.private_key_path)
-    timeout     = "15m"
-  }
-
-  provisioner "remote-exec" {
-    inline = [
-      "sudo apt update -y",
-      "sudo chmod 755 /home/ubuntu",
-
-      # Docker
-      "sudo apt install docker.io -y",
-      "sudo systemctl start docker",
-      "sudo systemctl enable docker",
-      "sudo usermod -aG docker ubuntu",
-      "sudo usermod -aG docker jenkins || true",
-      "sudo docker pull sonarqube:latest",
-      "sudo docker run -dit --name sonarqube -p 9000:9000 sonarqube:latest",
-
-      # Python & AWS CLI
-      "sudo apt install python3 python3-pip python3-venv unzip wget gnupg -y",
-      "curl 'https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip' -o 'awscliv2.zip'",
-      "unzip awscliv2.zip && sudo ./aws/install",
-      "aws --version",
-
-      # AWS config (uses IAM instance role - no keys needed on EC2)
-      "aws configure set default.region ${var.aws_region}",
-      "aws configure set default.output json",
-
-      # ECR login
-      "aws ecr get-login-password --region ${var.aws_region} | docker login --username AWS --password-stdin ${aws_ecr_repository.my_ecr_repo.repository_url}",
-
-      # Java 17
-      "sudo apt install openjdk-17-jdk -y",
-
-      # Maven
-      "sudo apt install maven -y",
-
-      # Git
-      "sudo apt install git -y",
-
-      # Trivy
-      "wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null",
-      "echo 'deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main' | sudo tee /etc/apt/sources.list.d/trivy.list",
-      "sudo apt update -y && sudo apt install trivy -y",
-
-      # Helm
-      "curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash",
-      "helm version",
-
-      # Jenkins
-      "sudo wget -O /etc/apt/keyrings/jenkins-keyring.asc https://pkg.jenkins.io/debian-stable/jenkins.io-2026.key",
-      "echo 'deb [signed-by=/etc/apt/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/' | sudo tee /etc/apt/sources.list.d/jenkins.list > /dev/null",
-      "sudo apt update -y && sudo apt install jenkins -y",
-      "sudo systemctl start jenkins && sudo systemctl enable jenkins",
-
-      # kubectl
-      "curl -LO 'https://dl.k8s.io/release/v1.29.0/bin/linux/amd64/kubectl'",
-      "chmod +x kubectl && sudo mv kubectl /usr/local/bin/",
-
-      # eksctl
-      "curl --silent --location --retry 3 'https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_linux_amd64.tar.gz' -o eksctl.tar.gz",
-      "tar -xzf eksctl.tar.gz -C /tmp && sudo mv /tmp/eksctl /usr/local/bin && rm eksctl.tar.gz",
-
-      # Create EKS cluster
-      "if eksctl get cluster --name ${var.eks_cluster_name} --region ${var.aws_region} &>/dev/null; then eksctl delete cluster --name ${var.eks_cluster_name} --region ${var.aws_region} --wait; fi",
-      "eksctl create cluster --name ${var.eks_cluster_name} --region ${var.aws_region} --node-type ${var.instance_type} --zones ${var.aws_region}a,${var.aws_region}b",
-      "aws eks update-kubeconfig --region ${var.aws_region} --name ${var.eks_cluster_name}",
-      "sudo mkdir -p /home/ubuntu/.kube && sudo cp ~/.kube/config /home/ubuntu/.kube/config",
-      "sudo chown -R ubuntu:ubuntu /home/ubuntu/.kube",
-      "sudo cp /home/ubuntu/.kube/config /var/lib/jenkins/.kube/config || true",
-      "sudo chown -R jenkins:jenkins /var/lib/jenkins/.kube || true",
-
-      # ── Prometheus & Grafana via Helm ──────────────────────
-      "helm repo add prometheus-community https://prometheus-community.github.io/helm-charts",
-      "helm repo add grafana https://grafana.github.io/helm-charts",
-      "helm repo update",
-
-      # Create monitoring namespace
-      "kubectl create namespace monitoring || true",
-
-      # Install kube-prometheus-stack (Prometheus + Grafana + Alertmanager)
-      "helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack --namespace monitoring --set grafana.adminPassword='admin@Grafana123' --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false --set grafana.service.type=LoadBalancer --set prometheus.service.type=LoadBalancer --set alertmanager.service.type=LoadBalancer --wait --timeout 10m",
-
-      # Install Node Exporter for EC2 host metrics
-      "helm install node-exporter prometheus-community/prometheus-node-exporter --namespace monitoring --set service.type=ClusterIP",
-
-      # Install Jenkins metrics exporter
-      "kubectl apply -f https://raw.githubusercontent.com/prometheus/jmx_exporter/main/example_configs/jenkins.yaml -n monitoring || true",
-
-      # Verify deployments
-      "kubectl get pods -n monitoring",
-      "kubectl get svc -n monitoring",
-
-      # Save Grafana LB URL
-      "GRAFANA_URL=$(kubectl get svc kube-prometheus-stack-grafana -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo 'pending')",
-      "PROMETHEUS_URL=$(kubectl get svc kube-prometheus-stack-prometheus -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo 'pending')",
-      "echo \"Grafana: http://$GRAFANA_URL\" > /tmp/monitoring_urls.txt",
-      "echo \"Prometheus: http://$PROMETHEUS_URL:9090\" >> /tmp/monitoring_urls.txt",
-      "cat /tmp/monitoring_urls.txt",
-
-      # Final log
-      "echo '=== Setup Complete ===' > /tmp/installation.log",
-      "date >> /tmp/installation.log",
-      "docker --version >> /tmp/installation.log 2>&1",
-      "java --version >> /tmp/installation.log 2>&1",
-      "kubectl version --client >> /tmp/installation.log 2>&1",
-      "helm version >> /tmp/installation.log 2>&1",
-      "cat /tmp/monitoring_urls.txt >> /tmp/installation.log"
-    ]
-  }
 }
 
 # ─────────────────────────────────────────
@@ -335,7 +166,7 @@ resource "aws_ebs_volume" "jenkins_volume" {
   availability_zone = aws_instance.my_ec2_instance.availability_zone
   size              = var.ebs_volume_size
   type              = "gp3"
-  encrypted         = true  # fixed: EBS encryption enabled
+  encrypted         = true
   tags = {
     Name        = "Jenkins-Volume"
     Environment = var.environment
