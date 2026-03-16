@@ -24,6 +24,8 @@ env:
   TF_VERSION: "1.7.0"
   AWS_REGION: "ap-south-1"
   TF_WORKING_DIR: "."
+  EKS_CLUSTER_NAME: "balu-cluster22"
+  ECR_REPO: "balu-elastic-ecr"
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 permissions:
@@ -47,7 +49,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Run Checkov (Terraform security scan)
+      - name: Run Checkov
         uses: bridgecrewio/checkov-action@master
         with:
           directory: ${{ env.TF_WORKING_DIR }}
@@ -56,7 +58,7 @@ jobs:
           output_format: sarif
           output_file_path: checkov-results.sarif
 
-      - name: Upload Checkov results to GitHub Security
+      - name: Upload Checkov results
         uses: github/codeql-action/upload-sarif@v4
         if: always()
         continue-on-error: true
@@ -137,7 +139,7 @@ jobs:
         run: exit 1
 
   # ─────────────────────────────────────────────
-  # JOB 3: Terraform Apply (main branch only)
+  # JOB 3: Terraform Apply
   # ─────────────────────────────────────────────
   terraform-apply:
     name: 🚀 Terraform Apply
@@ -187,24 +189,21 @@ jobs:
           path: ${{ env.TF_WORKING_DIR }}
 
       - name: Terraform Apply
-        run: |
-          terraform apply -auto-approve tfplan
+        run: terraform apply -auto-approve tfplan
 
-      - name: Capture Terraform Outputs
+      - name: Capture Outputs
         id: outputs
         run: |
           terraform output -json > terraform_outputs.json || true
           echo "EC2_IP=$(terraform output -raw ec2_public_ip 2>/dev/null || echo 'N/A')" >> $GITHUB_OUTPUT
           echo "ECR_URL=$(terraform output -raw ecr_repository_url 2>/dev/null || echo 'N/A')" >> $GITHUB_OUTPUT
 
-      - name: Show Outputs in Summary
+      - name: Show Outputs
         run: |
           echo "### ✅ Terraform Apply Complete" >> $GITHUB_STEP_SUMMARY
           echo "| Resource | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| EC2 Public IP | ${{ steps.outputs.outputs.EC2_IP }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Jenkins URL | http://${{ steps.outputs.outputs.EC2_IP }}:8080 |" >> $GITHUB_STEP_SUMMARY
-          echo "| SonarQube URL | http://${{ steps.outputs.outputs.EC2_IP }}:9000 |" >> $GITHUB_STEP_SUMMARY
+          echo "| EC2 IP | ${{ steps.outputs.outputs.EC2_IP }} |" >> $GITHUB_STEP_SUMMARY
           echo "| ECR URL | ${{ steps.outputs.outputs.ECR_URL }} |" >> $GITHUB_STEP_SUMMARY
 
   # ─────────────────────────────────────────────
@@ -217,6 +216,9 @@ jobs:
     if: |
       (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'apply')
+    outputs:
+      full_image: ${{ steps.tags.outputs.FULL_IMAGE }}
+      latest_image: ${{ steps.tags.outputs.LATEST_IMAGE }}
 
     steps:
       - name: Checkout code
@@ -238,17 +240,13 @@ jobs:
         run: |
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
           ECR_REGISTRY="${{ steps.login-ecr.outputs.registry }}"
-          ECR_REPO="balu-elastic-ecr"
           IMAGE_TAG="v$(date +'%Y%m%d')-$SHORT_SHA"
-          echo "SHORT_SHA=$SHORT_SHA"                           >> $GITHUB_OUTPUT
-          echo "IMAGE_TAG=$IMAGE_TAG"                           >> $GITHUB_OUTPUT
-          echo "ECR_REGISTRY=$ECR_REGISTRY"                    >> $GITHUB_OUTPUT
-          echo "ECR_REPO=$ECR_REPO"                            >> $GITHUB_OUTPUT
-          echo "FULL_IMAGE=$ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG" >> $GITHUB_OUTPUT
-          echo "LATEST_IMAGE=$ECR_REGISTRY/$ECR_REPO:latest"   >> $GITHUB_OUTPUT
-          echo "--- Image tags ---"
-          echo "SHA tag : $ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG"
-          echo "Latest  : $ECR_REGISTRY/$ECR_REPO:latest"
+          echo "SHORT_SHA=$SHORT_SHA"                                   >> $GITHUB_OUTPUT
+          echo "IMAGE_TAG=$IMAGE_TAG"                                   >> $GITHUB_OUTPUT
+          echo "ECR_REGISTRY=$ECR_REGISTRY"                            >> $GITHUB_OUTPUT
+          echo "FULL_IMAGE=$ECR_REGISTRY/${{ env.ECR_REPO }}:$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "LATEST_IMAGE=$ECR_REGISTRY/${{ env.ECR_REPO }}:latest" >> $GITHUB_OUTPUT
+          echo "Tag: $ECR_REGISTRY/${{ env.ECR_REPO }}:$IMAGE_TAG"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -256,9 +254,7 @@ jobs:
           node-version: "18"
 
       - name: Generate package-lock.json
-        run: |
-          npm install
-          ls -la package-lock.json
+        run: npm install
 
       - name: Build Docker image
         run: |
@@ -270,7 +266,7 @@ jobs:
             --file Dockerfile \
             .
 
-      - name: Run Trivy vulnerability scan
+      - name: Run Trivy scan
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ steps.tags.outputs.FULL_IMAGE }}
@@ -284,19 +280,16 @@ jobs:
           docker push ${{ steps.tags.outputs.FULL_IMAGE }}
           docker push ${{ steps.tags.outputs.LATEST_IMAGE }}
 
-      - name: Show image details in Summary
+      - name: Show image in Summary
         run: |
-          echo "### 🐳 Docker Image Pushed to ECR" >> $GITHUB_STEP_SUMMARY
-          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| ECR Registry | ${{ steps.tags.outputs.ECR_REGISTRY }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Repository | ${{ steps.tags.outputs.ECR_REPO }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Image Tag | ${{ steps.tags.outputs.IMAGE_TAG }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Full Image | ${{ steps.tags.outputs.FULL_IMAGE }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Latest | ${{ steps.tags.outputs.LATEST_IMAGE }} |" >> $GITHUB_STEP_SUMMARY
+          echo "### 🐳 Docker Image Pushed" >> $GITHUB_STEP_SUMMARY
+          echo "| Tag | Image |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| versioned | ${{ steps.tags.outputs.FULL_IMAGE }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| latest | ${{ steps.tags.outputs.LATEST_IMAGE }} |" >> $GITHUB_STEP_SUMMARY
 
   # ─────────────────────────────────────────────
-  # JOB 5: Deploy to EKS
+  # JOB 5: Deploy to EKS + Print URL
   # ─────────────────────────────────────────────
   deploy-to-eks:
     name: 🚢 Deploy to EKS
@@ -326,41 +319,58 @@ jobs:
         run: |
           aws eks update-kubeconfig \
             --region ${{ env.AWS_REGION }} \
-            --name balu-cluster22
+            --name ${{ env.EKS_CLUSTER_NAME }}
 
-      - name: Set image tag
-        id: tag
+      - name: Login to ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image
+        id: img
         run: |
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
           IMAGE_TAG="v$(date +'%Y%m%d')-$SHORT_SHA"
-          ECR_REGISTRY="122980875414.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
-          FULL_IMAGE="$ECR_REGISTRY/balu-elastic-ecr:$IMAGE_TAG"
+          FULL_IMAGE="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO }}:$IMAGE_TAG"
           echo "FULL_IMAGE=$FULL_IMAGE" >> $GITHUB_OUTPUT
-          echo "Deploying image: $FULL_IMAGE"
 
       - name: Deploy to EKS
         run: |
-          kubectl apply -f k8s-deployment.yml
+          kubectl apply -f k8s/k8s-deployment.yml
           kubectl set image deployment/cloudshield-app \
-            cloudshield-app=${{ steps.tag.outputs.FULL_IMAGE }} \
+            cloudshield-app=${{ steps.img.outputs.FULL_IMAGE }} \
             -n app
           kubectl rollout status deployment/cloudshield-app -n app --timeout=5m
 
-      - name: Get app URL
+      - name: Wait for public URL
         run: |
-          echo "Waiting for LoadBalancer..."
-          sleep 20
-          APP_URL=$(kubectl get svc cloudshield-app-svc -n app \
-            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo 'pending')
-          echo "======================================"
-          echo " App URL: http://$APP_URL"
-          echo "======================================"
-          echo "### 🚢 App Deployed to EKS" >> $GITHUB_STEP_SUMMARY
-          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Image | ${{ steps.tag.outputs.FULL_IMAGE }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| App URL | http://$APP_URL |" >> $GITHUB_STEP_SUMMARY
-          echo "| Health | http://$APP_URL/health |" >> $GITHUB_STEP_SUMMARY
+          echo "Waiting for LoadBalancer URL..."
+          for i in $(seq 1 24); do
+            APP_URL=$(kubectl get svc cloudshield-app-svc -n app \
+              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+            if [ -n "$APP_URL" ]; then
+              echo ""
+              echo "╔══════════════════════════════════════════════════╗"
+              echo "║           ✅  APP IS LIVE AND PUBLIC!            ║"
+              echo "╠══════════════════════════════════════════════════╣"
+              echo "║  🌐  http://$APP_URL"
+              echo "╚══════════════════════════════════════════════════╝"
+              echo ""
+              echo "### 🌐 Your App is LIVE!" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "| Endpoint | URL |" >> $GITHUB_STEP_SUMMARY
+              echo "|----------|-----|" >> $GITHUB_STEP_SUMMARY
+              echo "| 🚀 **App** | [http://$APP_URL](http://$APP_URL) |" >> $GITHUB_STEP_SUMMARY
+              echo "| ❤️ Health | [http://$APP_URL/health](http://$APP_URL/health) |" >> $GITHUB_STEP_SUMMARY
+              echo "| 📊 Metrics | [http://$APP_URL/metrics](http://$APP_URL/metrics) |" >> $GITHUB_STEP_SUMMARY
+              echo "| ℹ️ API Info | [http://$APP_URL/api/info](http://$APP_URL/api/info) |" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "**Image:** \`${{ steps.img.outputs.FULL_IMAGE }}\`" >> $GITHUB_STEP_SUMMARY
+              exit 0
+            fi
+            echo "Waiting for URL... ($i/24)"
+            sleep 15
+          done
+          echo "⚠️ URL not ready in time — check: kubectl get svc cloudshield-app-svc -n app"
 
   # ─────────────────────────────────────────────
   # JOB 6: Terraform Destroy (manual only)
@@ -400,82 +410,69 @@ jobs:
           echo "${{ secrets.EC2_PRIVATE_KEY }}" > /tmp/ec2_key.pem
           chmod 600 /tmp/ec2_key.pem
 
-      # ── Step 1: Delete all Kubernetes LoadBalancer services ──
       - name: Delete Kubernetes services
         continue-on-error: true
         run: |
           aws eks update-kubeconfig \
             --region ${{ env.AWS_REGION }} \
-            --name balu-cluster22 2>/dev/null || echo "EKS cluster not found - skipping"
-          kubectl delete svc --all -n app          2>/dev/null || true
-          kubectl delete svc --all -n monitoring   2>/dev/null || true
+            --name ${{ env.EKS_CLUSTER_NAME }} 2>/dev/null || true
+          kubectl delete svc --all -n app        2>/dev/null || true
+          kubectl delete svc --all -n monitoring 2>/dev/null || true
           echo "Waiting 60s for LBs to release..."
           sleep 60
 
-      # ── Step 2: Delete EKS node group ────────────────────────
       - name: Delete EKS node group
         continue-on-error: true
         run: |
           aws eks delete-nodegroup \
-            --cluster-name balu-cluster22 \
-            --nodegroup-name balu-cluster22-node-group \
-            --region ${{ env.AWS_REGION }} 2>/dev/null || echo "Node group not found"
-          echo "Waiting for node group deletion..."
+            --cluster-name ${{ env.EKS_CLUSTER_NAME }} \
+            --nodegroup-name ${{ env.EKS_CLUSTER_NAME }}-node-group \
+            --region ${{ env.AWS_REGION }} 2>/dev/null || true
           aws eks wait nodegroup-deleted \
-            --cluster-name balu-cluster22 \
-            --nodegroup-name balu-cluster22-node-group \
+            --cluster-name ${{ env.EKS_CLUSTER_NAME }} \
+            --nodegroup-name ${{ env.EKS_CLUSTER_NAME }}-node-group \
             --region ${{ env.AWS_REGION }} 2>/dev/null || true
 
-      # ── Step 3: Delete EKS cluster ───────────────────────────
       - name: Delete EKS cluster
         continue-on-error: true
         run: |
           aws eks delete-cluster \
-            --name balu-cluster22 \
-            --region ${{ env.AWS_REGION }} 2>/dev/null || echo "Cluster not found"
-          echo "Waiting for cluster deletion..."
+            --name ${{ env.EKS_CLUSTER_NAME }} \
+            --region ${{ env.AWS_REGION }} 2>/dev/null || true
           aws eks wait cluster-deleted \
-            --name balu-cluster22 \
+            --name ${{ env.EKS_CLUSTER_NAME }} \
             --region ${{ env.AWS_REGION }} 2>/dev/null || true
 
-      # ── Step 4: Delete classic load balancers ────────────────
       - name: Delete Classic Load Balancers
         continue-on-error: true
         run: |
           LBS=$(aws elb describe-load-balancers \
             --region ${{ env.AWS_REGION }} \
-            --query "LoadBalancerDescriptions[?VPCId=='vpc-0adf624451380abc5'].LoadBalancerName" \
+            --query "LoadBalancerDescriptions[*].LoadBalancerName" \
             --output text 2>/dev/null || echo "")
-          if [ -n "$LBS" ]; then
-            for lb in $LBS; do
-              echo "Deleting LB: $lb"
-              aws elb delete-load-balancer --load-balancer-name $lb --region ${{ env.AWS_REGION }} || true
-            done
-            echo "Waiting 60s for LB ENIs to detach..."
-            sleep 60
-          else
-            echo "No classic LBs found"
-          fi
+          for lb in $LBS; do
+            echo "Deleting LB: $lb"
+            aws elb delete-load-balancer --load-balancer-name $lb --region ${{ env.AWS_REGION }} || true
+          done
+          sleep 60
 
-      # ── Step 5: Delete orphaned k8s security groups ──────────
       - name: Delete orphaned security groups
         continue-on-error: true
         run: |
           SGS=$(aws ec2 describe-security-groups \
-            --filters "Name=vpc-id,Values=vpc-0adf624451380abc5" \
+            --filters "Name=tag-key,Values=kubernetes.io/cluster/${{ env.EKS_CLUSTER_NAME }}" \
+            --region ${{ env.AWS_REGION }} \
+            --query "SecurityGroups[*].GroupId" \
+            --output text 2>/dev/null || echo "")
+          K8SELB=$(aws ec2 describe-security-groups \
             --region ${{ env.AWS_REGION }} \
             --query "SecurityGroups[?starts_with(GroupName,'k8s-elb')].GroupId" \
             --output text 2>/dev/null || echo "")
-          if [ -n "$SGS" ]; then
-            for sg in $SGS; do
-              echo "Deleting SG: $sg"
-              aws ec2 delete-security-group --group-id $sg --region ${{ env.AWS_REGION }} || true
-            done
-          else
-            echo "No orphaned k8s security groups found"
-          fi
+          for sg in $SGS $K8SELB; do
+            echo "Deleting SG: $sg"
+            aws ec2 delete-security-group --group-id $sg --region ${{ env.AWS_REGION }} || true
+          done
 
-      # ── Step 6: Release Elastic IPs ──────────────────────────
       - name: Release Elastic IPs
         continue-on-error: true
         run: |
@@ -483,37 +480,27 @@ jobs:
             --region ${{ env.AWS_REGION }} \
             --query "Addresses[*].AllocationId" \
             --output text 2>/dev/null || echo "")
-          if [ -n "$EIPS" ]; then
-            for eip in $EIPS; do
-              echo "Releasing EIP: $eip"
-              aws ec2 release-address --allocation-id $eip --region ${{ env.AWS_REGION }} || true
-            done
-          else
-            echo "No Elastic IPs found"
-          fi
+          for eip in $EIPS; do
+            echo "Releasing EIP: $eip"
+            aws ec2 release-address --allocation-id $eip --region ${{ env.AWS_REGION }} || true
+          done
 
-      # ── Step 7: Delete all ECR images ────────────────────────
       - name: Delete ECR images
         continue-on-error: true
         run: |
-          ECR_REPO="balu-elastic-ecr"
-          echo "Deleting all images from ECR repo: $ECR_REPO"
           IMAGE_IDS=$(aws ecr list-images \
-            --repository-name $ECR_REPO \
+            --repository-name ${{ env.ECR_REPO }} \
             --region ${{ env.AWS_REGION }} \
             --query "imageIds[*]" \
             --output json 2>/dev/null || echo "[]")
           if [ "$IMAGE_IDS" != "[]" ] && [ -n "$IMAGE_IDS" ]; then
             aws ecr batch-delete-image \
-              --repository-name $ECR_REPO \
+              --repository-name ${{ env.ECR_REPO }} \
               --region ${{ env.AWS_REGION }} \
               --image-ids "$IMAGE_IDS"
             echo "All ECR images deleted"
-          else
-            echo "No images found in ECR"
           fi
 
-      # ── Step 8: Terraform Init ───────────────────────────────
       - name: Terraform Init
         run: |
           terraform init \
@@ -522,7 +509,6 @@ jobs:
             -backend-config="region=${{ env.AWS_REGION }}" \
             -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}"
 
-      # ── Step 9: Terraform Destroy ────────────────────────────
       - name: Terraform Destroy
         run: |
           terraform destroy \
