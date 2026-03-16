@@ -1,99 +1,62 @@
-# ─────────────────────────────────────────
-# Namespace
-# ─────────────────────────────────────────
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: app
+  name: boardgame
 ---
-# ─────────────────────────────────────────
-# Deployment
-# ─────────────────────────────────────────
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: cloudshield-app
-  namespace: app
+  name: boardgame-app
+  namespace: boardgame
   labels:
-    app: cloudshield-app
+    app: boardgame-app
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app: cloudshield-app
+      app: boardgame-app
   template:
     metadata:
       labels:
-        app: cloudshield-app
+        app: boardgame-app
     spec:
       containers:
-        - name: cloudshield-app
-          image: 122980875414.dkr.ecr.ap-south-1.amazonaws.com/balu-elastic-ecr:v20260314-ac8e9b7
+        - name: boardgame-app
+          image: 122980875414.dkr.ecr.ap-south-1.amazonaws.com/balu-elastic-ecr:boardgame-latest
           imagePullPolicy: Always
           ports:
-            - containerPort: 3000
-          env:
-            - name: NODE_ENV
-              value: "production"
-            - name: PORT
-              value: "3000"
+            - containerPort: 8080
           resources:
             requests:
-              cpu: 100m
-              memory: 128Mi
-            limits:
-              cpu: 300m
+              cpu: 200m
               memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
           livenessProbe:
             httpGet:
-              path: /health
-              port: 3000
-            initialDelaySeconds: 15
-            periodSeconds: 20
+              path: /
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 30
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /ready
-              port: 3000
-            initialDelaySeconds: 5
+              path: /
+              port: 8080
+            initialDelaySeconds: 30
             periodSeconds: 10
 ---
-# ─────────────────────────────────────────
-# Service (LoadBalancer)
-# ─────────────────────────────────────────
 apiVersion: v1
 kind: Service
 metadata:
-  name: cloudshield-app-svc
-  namespace: app
+  name: boardgame-svc
+  namespace: boardgame
 spec:
   type: LoadBalancer
   selector:
-    app: cloudshield-app
+    app: boardgame-app
   ports:
     - protocol: TCP
       port: 80
-      targetPort: 3000
----
-# ─────────────────────────────────────────
-# HorizontalPodAutoscaler
-# ─────────────────────────────────────────
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: cloudshield-app-hpa
-  namespace: app
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: cloudshield-app
-  minReplicas: 2
-  maxReplicas: 5
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: 70
+      targetPort: 8080
