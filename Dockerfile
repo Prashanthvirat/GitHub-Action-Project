@@ -1,56 +1,28 @@
 # ─────────────────────────────────────────
-# Stage 1: Builder
+# Stage 1: Build with Maven
 # ─────────────────────────────────────────
-FROM node:18-alpine AS builder
+FROM maven:3.9.6-eclipse-temurin-11 AS builder
 
-WORKDIR /app
+WORKDIR /build
 
-# Copy package files first (layer caching)
-COPY package*.json ./
-
-# Install all dependencies including devDependencies
-RUN npm ci --only=production && \
-    npm cache clean --force
-
-# Copy source code
-COPY app.js ./
+# Clone the boardgame repo
+RUN apt-get update && apt-get install -y git && \
+    git clone https://github.com/pathakotasanthoshreddy/CloudShield_DevSecOps_Hackathon_2026_Solution_AWS_DevSecOps.git . && \
+    cd board && \
+    mvn clean package -DskipTests
 
 # ─────────────────────────────────────────
-# Stage 2: Production
+# Stage 2: Production image
 # ─────────────────────────────────────────
-FROM node:18-alpine AS production
+FROM eclipse-temurin:11-jre
 
-# Security: add non-root user
-RUN addgroup -g 1001 -S appgroup && \
-    adduser  -u 1001 -S appuser -G appgroup
+WORKDIR /usr/src/app
 
-WORKDIR /app
+COPY --from=builder /build/board/target/database_service_project-*.jar app.jar
 
-# Copy only production node_modules from builder
-COPY --from=builder --chown=appuser:appgroup /app/node_modules ./node_modules
-COPY --from=builder --chown=appuser:appgroup /app/app.js      ./app.js
-COPY --chown=appuser:appgroup package*.json ./
+EXPOSE 8080
 
-# Security hardening
-RUN apk update && \
-    apk upgrade && \
-    apk add --no-cache dumb-init && \
-    rm -rf /var/cache/apk/*
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+  CMD curl -f http://localhost:8080/actuator/health || exit 1
 
-# Set environment
-ENV NODE_ENV=production \
-    PORT=3000
-
-# Use non-root user
-USER appuser
-
-# Expose port
-EXPOSE 3000
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
-
-# Use dumb-init to handle signals properly
-ENTRYPOINT ["dumb-init", "--"]
-CMD ["node", "app.js"]
+ENTRYPOINT ["java", "-jar", "app.jar"]
