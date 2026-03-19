@@ -1,57 +1,102 @@
-# Jenkins EKS Infrastructure — CI/CD + Monitoring
+# CloudShield DevSecOps — CI/CD Pipeline
 
 ## 🏗️ Architecture
 
 ```
 GitHub Actions
-  ├── Security Scan (Checkov + tfsec)
-  ├── Terraform Plan  ──► PR comment
-  ├── Terraform Apply ──► main branch only (requires approval)
-  └── Deploy Monitoring (auto-triggered after Apply)
+  ├── 🔐 Security Scan     (Checkov + tfsec)
+  ├── 📋 Terraform Plan
+  ├── 🚀 Terraform Apply   (main branch only)
+  ├── 🐳 Docker Build      (Maven + ECR push + Trivy scan)
+  ├── 🚢 Deploy to EKS     (Boardgame app + public URL)
+  └── 💣 Terraform Destroy (manual only)
             │
             ▼
 AWS ap-south-1
-  ├── VPC + Subnet + IGW
-  ├── EC2 (Jenkins + SonarQube + Trivy)
-  │     └── EBS 100GB (gp3)
-  ├── ECR Repository
-  └── EKS Cluster (balu-cluster22)
+  ├── VPC (10.0.0.0/16)
+  │     ├── Subnet A (10.0.1.0/24) — ap-south-1a
+  │     └── Subnet B (10.0.2.0/24) — ap-south-1b
+  ├── ECR Repository       (balu-elastic-ecr)
+  ├── EC2 Instance         (tools: Docker, SonarQube, AWS CLI)
+  │     └── EBS Volume     (gp3, encrypted)
+  └── EKS Cluster          (balu-cluster22, v1.29)
+        ├── boardgame namespace
+        │     └── Boardgame App (LoadBalancer → port 80)
         └── monitoring namespace
-              ├── Prometheus (LoadBalancer)
-              ├── Grafana    (LoadBalancer)
-              ├── Alertmanager
-              └── Node Exporter (DaemonSet)
+              ├── Prometheus   (LoadBalancer)
+              ├── Grafana      (LoadBalancer)
+              └── Node Exporter
 ```
 
 ---
 
-## ⚠️ SECURITY: Remove Hardcoded Credentials
+## 🚀 Pipeline Flow
 
-Your original `main.tf` contained hardcoded AWS keys. **Rotate those keys immediately** in the AWS IAM console, then use the new `variables.tf` approach.
+```
+git push → main
+    │
+    ├─ 1. 🔐 Security Scan   — Checkov + tfsec on Terraform code
+    ├─ 2. 📋 Terraform Plan  — preview infrastructure changes
+    ├─ 3. 🚀 Terraform Apply — create VPC, EKS, EC2, ECR
+    ├─ 4. 🐳 Docker Build    — build boardgame JAR, scan, push to ECR
+    ├─ 5. 🚢 Deploy to EKS   — deploy image, print public URL
+    └─ 6. 💣 Destroy         — manual trigger only
+```
+
+### Manual triggers (workflow_dispatch)
+- **plan** — dry run only
+- **apply** — full deploy
+- **destroy** — deletes all AWS resources
 
 ---
 
-## 🔑 GitHub Secrets to Configure
+## 📁 File Structure
 
-Go to **Settings → Secrets and variables → Actions** in your repo and add:
+```
+.
+├── .github/
+│   └── workflows/
+│       ├── terraform-cicd.yml    # Main pipeline
+│       └── monitoring.yml        # Prometheus + Grafana deploy
+├── k8s/
+│   └── k8s-boardgame.yml         # Boardgame K8s deployment + service
+├── monitoring/
+│   ├── prometheus-rules.yaml     # Alert rules
+│   └── grafana-dashboard.yaml    # Dashboards + datasource
+├── main.tf                       # VPC, EC2, ECR, EBS, IAM
+├── eks.tf                        # EKS cluster + node group + security groups
+├── provisioners.tf               # EC2 null_resource provisioners
+├── outputs.tf                    # EC2 IP, ECR URL, EKS outputs
+├── variables.tf                  # All input variables
+├── versions.tf                   # Provider versions + S3 backend
+├── tools.sh                      # EC2 installation script
+├── Dockerfile                    # Multi-stage build (Maven → JRE)
+├── app.js                        # Node.js health check app
+└── package.json                  # Node.js dependencies
+```
 
-| Secret Name | Description |
+---
+
+## 🔑 GitHub Secrets Required
+
+Go to **Settings → Secrets and variables → Actions** and add:
+
+| Secret | Description |
 |---|---|
-| `AWS_ACCESS_KEY_ID` | Your AWS access key |
-| `AWS_SECRET_ACCESS_KEY` | Your AWS secret key |
-| `TF_STATE_BUCKET` | S3 bucket name for Terraform state |
-| `TF_LOCK_TABLE` | DynamoDB table name for state locking |
-| `KEY_PAIR_NAME` | EC2 Key Pair name (e.g. `balu-task-key`) |
-| `EC2_PRIVATE_KEY` | Full contents of your `.pem` private key |
+| `AWS_ACCESS_KEY_ID` | AWS access key |
+| `AWS_SECRET_ACCESS_KEY` | AWS secret key |
+| `TF_STATE_BUCKET` | S3 bucket for Terraform state |
+| `TF_LOCK_TABLE` | DynamoDB table for state locking |
+| `KEY_PAIR_NAME` | EC2 key pair name |
+| `EC2_PRIVATE_KEY` | Contents of `.pem` private key |
 | `GRAFANA_ADMIN_PASSWORD` | Grafana admin password |
-| `SLACK_WEBHOOK_URL` | (Optional) Slack webhook for notifications |
 
 ---
 
 ## 🪣 S3 Backend Setup (one-time)
 
 ```bash
-# Create S3 bucket for Terraform state
+# Create S3 bucket
 aws s3api create-bucket \
   --bucket your-tf-state-bucket \
   --region ap-south-1 \
@@ -62,7 +107,7 @@ aws s3api put-bucket-versioning \
   --bucket your-tf-state-bucket \
   --versioning-configuration Status=Enabled
 
-# Create DynamoDB table for state locking
+# Create DynamoDB table
 aws dynamodb create-table \
   --table-name your-tf-lock-table \
   --attribute-definitions AttributeName=LockID,AttributeType=S \
@@ -73,78 +118,105 @@ aws dynamodb create-table \
 
 ---
 
-## 📁 File Structure
+## 🐳 Docker Image
+
+The Boardgame app is a **Java Spring Boot** application built using Maven:
 
 ```
-.
-├── .github/
-│   └── workflows/
-│       ├── terraform.yml      # Main CI/CD pipeline
-│       └── monitoring.yml     # Prometheus + Grafana deploy
-├── monitoring/
-│   ├── prometheus-rules.yaml  # Alert rules (Jenkins + EKS)
-│   └── grafana-dashboard.yaml # Pre-built dashboards + datasource
-├── main.tf                    # Core infrastructure (no hardcoded creds)
-├── variables.tf               # All input variables
-├── outputs.tf                 # Useful outputs (URLs, IPs)
-└── versions.tf                # Provider versions + S3 backend
+Stage 1 — Builder
+  Maven 3.9.6 + Eclipse Temurin 11
+  Clones boardgame repo
+  Runs: mvn clean package -DskipTests
+
+Stage 2 — Production
+  Eclipse Temurin 11 JRE (slim)
+  Copies JAR → app.jar
+  EXPOSE 8080
+  ENTRYPOINT java -jar app.jar
+```
+
+Images are tagged as:
+- `boardgame-v<date>-<sha>` — versioned
+- `boardgame-latest` — always latest
+
+---
+
+## ☸️ Kubernetes
+
+```yaml
+Namespace:  boardgame
+Deployment: boardgame-app (2 replicas)
+Service:    boardgame-svc (LoadBalancer, port 80 → 8080)
+HPA:        min 2, max 5 pods (70% CPU)
 ```
 
 ---
 
-## 🚀 Pipeline Flow
+## 📊 Monitoring
 
+Deploy monitoring stack:
 ```
-git push → main
-    │
-    ├─ 1. security-scan   (Checkov + tfsec)
-    ├─ 2. terraform-plan  (always runs, posts to PR)
-    ├─ 3. terraform-apply (main branch + manual approval)
-    └─ 4. deploy-monitoring (auto after apply succeeds)
+GitHub → Actions → Deploy Monitoring Stack → Run workflow
 ```
 
-### Manual triggers (workflow_dispatch)
-- **Plan** — dry run only
-- **Apply** — deploy infrastructure
-- **Destroy** — requires `destroy-approval` environment approval
-
----
-
-## 📊 Monitoring Access
-
-After deployment, get your URLs:
-
+Get URLs after deployment:
 ```bash
 # Grafana
 kubectl get svc kube-prometheus-stack-grafana -n monitoring
 
 # Prometheus
 kubectl get svc kube-prometheus-stack-prometheus -n monitoring
-
-# Alertmanager
-kubectl get svc kube-prometheus-stack-alertmanager -n monitoring
 ```
 
-**Grafana login:** `admin` / your `GRAFANA_ADMIN_PASSWORD` secret
+**Grafana login:** `admin` / your `GRAFANA_ADMIN_PASSWORD`
 
-### Pre-configured dashboards (import by ID in Grafana)
 | Dashboard | Grafana ID |
 |---|---|
 | Kubernetes Cluster | 6417 |
 | Node Exporter Full | 1860 |
-| Jenkins Performance | 9964 |
 | EKS Cluster | 17119 |
 
 ---
 
-## 🔔 Alerts Configured
+## 🌐 Access Application
 
-| Alert | Trigger | Severity |
-|---|---|---|
-| JenkinsDown | Jenkins unreachable 5m | Critical |
-| JenkinsHighJobFailureRate | >50% builds failing | Warning |
-| JenkinsQueueLengthHigh | Queue > 10 for 10m | Warning |
-| NodeHighCPU | CPU > 85% for 10m | Warning |
-| NodeHighMemory | Memory > 85% for 10m | Warning |
-| NodeDiskPressure | Disk < 15% free | Critical |
-| PodCrashLooping | >5 restarts in 15m | Critical |
+After pipeline completes, the public URL appears in:
+```
+GitHub → Actions → your run → Summary tab
+```
+
+Or run manually:
+```bash
+kubectl get svc boardgame-svc -n boardgame
+```
+
+---
+
+## 💣 Destroy All Resources
+
+```
+GitHub → Actions → Terraform CI/CD Pipeline
+  → Run workflow → select "destroy" → Run
+```
+
+This automatically:
+1. Deletes K8s LoadBalancer services
+2. Deletes EKS node group + cluster
+3. Deletes Classic Load Balancers
+4. Deletes orphaned security groups
+5. Releases Elastic IPs
+6. Deletes ECR images
+7. Runs `terraform destroy`
+
+---
+
+## 🔐 Security Tools
+
+| Tool | Purpose |
+|---|---|
+| Checkov | Terraform IaC security scanning |
+| tfsec | Terraform security analysis |
+| Trivy | Docker image vulnerability scanning |
+| Helmet.js | HTTP security headers |
+| IMDSv2 | EC2 metadata service hardening |
+| EBS encryption | Storage encryption at rest |
