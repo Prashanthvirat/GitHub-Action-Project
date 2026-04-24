@@ -24,8 +24,8 @@ env:
   TF_VERSION: "1.7.0"
   AWS_REGION: "ap-south-1"
   TF_WORKING_DIR: "."
-  EKS_CLUSTER_NAME: "prashanth-cluster22"
-  ECR_REPO: "prashanth-elastic-ecr"
+  EKS_CLUSTER_NAME: "balu-cluster22"
+  ECR_REPO: "balu-elastic-ecr"
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 permissions:
@@ -122,7 +122,9 @@ jobs:
             -var="key_pair_name=${{ secrets.KEY_PAIR_NAME }}" \
             -var="private_key_path=/tmp/ec2_key.pem" \
             -no-color \
-            -out=tfplan 2>&1 | tee plan_output.txt
+            -out=tfplan > plan_output.txt 2>&1
+          cat plan_output.txt
+          ls -lh tfplan plan_output.txt
         continue-on-error: true
 
       - name: Upload plan artifact
@@ -187,6 +189,18 @@ jobs:
         with:
           name: terraform-plan
           path: ${{ env.TF_WORKING_DIR }}
+
+      - name: Verify tfplan exists
+        run: |
+          echo "=== Files in working dir ==="
+          ls -lh
+          echo "=== Checking tfplan ==="
+          if [ ! -f tfplan ]; then
+            echo "ERROR: tfplan not found!"
+            cat plan_output.txt || true
+            exit 1
+          fi
+          echo "tfplan found - size: $(du -h tfplan | cut -f1)"
 
       - name: Terraform Apply
         run: terraform apply -auto-approve tfplan
