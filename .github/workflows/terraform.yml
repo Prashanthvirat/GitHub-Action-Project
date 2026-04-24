@@ -24,8 +24,8 @@ env:
   TF_VERSION: "1.7.0"
   AWS_REGION: "ap-south-1"
   TF_WORKING_DIR: "."
-  EKS_CLUSTER_NAME: "balu-cluster22"
-  ECR_REPO: "balu-elastic-ecr"
+  EKS_CLUSTER_NAME: "prashanth-cluster22"
+  ECR_REPO: "prashanth-elastic-ecr"
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 permissions:
@@ -194,13 +194,12 @@ jobs:
         run: |
           echo "=== Files in working dir ==="
           ls -lh
-          echo "=== Checking tfplan ==="
           if [ ! -f tfplan ]; then
             echo "ERROR: tfplan not found!"
             cat plan_output.txt || true
             exit 1
           fi
-          echo "tfplan found - size: $(du -h tfplan | cut -f1)"
+          echo "tfplan found — size: $(du -h tfplan | cut -f1)"
 
       - name: Terraform Apply
         run: terraform apply -auto-approve tfplan
@@ -255,10 +254,10 @@ jobs:
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
           ECR_REGISTRY="${{ steps.login-ecr.outputs.registry }}"
           IMAGE_TAG="boardgame-v$(date +'%Y%m%d')-$SHORT_SHA"
-          echo "SHORT_SHA=$SHORT_SHA"                                      >> $GITHUB_OUTPUT
-          echo "IMAGE_TAG=$IMAGE_TAG"                                      >> $GITHUB_OUTPUT
-          echo "ECR_REGISTRY=$ECR_REGISTRY"                               >> $GITHUB_OUTPUT
-          echo "FULL_IMAGE=$ECR_REGISTRY/${{ env.ECR_REPO }}:$IMAGE_TAG"  >> $GITHUB_OUTPUT
+          echo "SHORT_SHA=$SHORT_SHA"                                           >> $GITHUB_OUTPUT
+          echo "IMAGE_TAG=$IMAGE_TAG"                                           >> $GITHUB_OUTPUT
+          echo "ECR_REGISTRY=$ECR_REGISTRY"                                    >> $GITHUB_OUTPUT
+          echo "FULL_IMAGE=$ECR_REGISTRY/${{ env.ECR_REPO }}:$IMAGE_TAG"       >> $GITHUB_OUTPUT
           echo "LATEST_IMAGE=$ECR_REGISTRY/${{ env.ECR_REPO }}:boardgame-latest" >> $GITHUB_OUTPUT
           echo "Tag: $ECR_REGISTRY/${{ env.ECR_REPO }}:$IMAGE_TAG"
 
@@ -415,8 +414,9 @@ jobs:
           aws eks update-kubeconfig \
             --region ${{ env.AWS_REGION }} \
             --name ${{ env.EKS_CLUSTER_NAME }} 2>/dev/null || true
-          kubectl delete svc --all -n app        2>/dev/null || true
-          kubectl delete svc --all -n monitoring 2>/dev/null || true
+          kubectl delete svc --all -n boardgame   2>/dev/null || true
+          kubectl delete svc --all -n app         2>/dev/null || true
+          kubectl delete svc --all -n monitoring  2>/dev/null || true
           echo "Waiting 60s for LBs to release..."
           sleep 60
 
@@ -451,7 +451,9 @@ jobs:
             --output text 2>/dev/null || echo "")
           for lb in $LBS; do
             echo "Deleting LB: $lb"
-            aws elb delete-load-balancer --load-balancer-name $lb --region ${{ env.AWS_REGION }} || true
+            aws elb delete-load-balancer \
+              --load-balancer-name $lb \
+              --region ${{ env.AWS_REGION }} || true
           done
           sleep 60
 
@@ -469,7 +471,9 @@ jobs:
             --output text 2>/dev/null || echo "")
           for sg in $SGS $K8SELB; do
             echo "Deleting SG: $sg"
-            aws ec2 delete-security-group --group-id $sg --region ${{ env.AWS_REGION }} || true
+            aws ec2 delete-security-group \
+              --group-id $sg \
+              --region ${{ env.AWS_REGION }} || true
           done
 
       - name: Release Elastic IPs
@@ -481,7 +485,9 @@ jobs:
             --output text 2>/dev/null || echo "")
           for eip in $EIPS; do
             echo "Releasing EIP: $eip"
-            aws ec2 release-address --allocation-id $eip --region ${{ env.AWS_REGION }} || true
+            aws ec2 release-address \
+              --allocation-id $eip \
+              --region ${{ env.AWS_REGION }} || true
           done
 
       - name: Delete ECR images
