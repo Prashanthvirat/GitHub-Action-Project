@@ -24,8 +24,8 @@ env:
   TF_VERSION: "1.7.0"
   AWS_REGION: "ap-south-1"
   TF_WORKING_DIR: "."
-  EKS_CLUSTER_NAME: "balu-cluster22"
-  ECR_REPO: "balu-elastic-ecr"
+  EKS_CLUSTER_NAME: "prashanth-cluster22"
+  ECR_REPO: "prashanth-elastic-ecr"
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 permissions:
